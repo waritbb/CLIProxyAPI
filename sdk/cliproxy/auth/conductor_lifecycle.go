@@ -602,7 +602,7 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 		// A refresh that confirms quota restoration (issue #6690) releases the
 		// credential-wide cooldown early; otherwise the active credential
 		// quota below is preserved exactly as before.
-		devinQuotaRestored := (mode == updateModeRefresh || mode == updateModeQuotaObservation) && applyDevinQuotaRestoration(auth, existing, now)
+		devinQuotaRestored := (mode == updateModeQuotaObservation || mode == updateModeRefresh && strings.EqualFold(strings.TrimSpace(existing.Provider), "devin")) && applyDevinQuotaRestoration(auth, existing, now)
 		if devinQuotaRestored {
 			cooldownStateChanged = true
 		} else if existing.Quota.Exceeded && existing.Quota.Reason == "credential_quota" && existing.Quota.NextRecoverAt.After(now) {

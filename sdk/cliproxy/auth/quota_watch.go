@@ -108,6 +108,11 @@ func (w *quotaWatch) probeOne(ctx context.Context, base *Auth, prober QuotaProbe
 	decision, reason := "hold", "incomplete"
 	status := 0
 	defer func() {
+		if recover() != nil {
+			e.failures++
+			e.nextProbe = w.now().Add(quotaWatchErrorBackoff(e.failures))
+			decision, reason = "probe_error", "probe_panic"
+		}
 		fields["reason"] = reason
 		fields["next_probe_in"] = e.nextProbe.Sub(w.now())
 		fields["status"] = status
@@ -123,6 +128,7 @@ func (w *quotaWatch) probeOne(ctx context.Context, base *Auth, prober QuotaProbe
 		return
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, quotaWatchProbeTimeout)
+	defer cancel()
 	probe, err := prober.ProbeQuota(probeCtx, base.Clone())
 	if err == nil {
 		err = probeCtx.Err()
@@ -169,7 +175,7 @@ func (w *quotaWatch) probeOne(ctx context.Context, base *Auth, prober QuotaProbe
 		return
 	}
 	e.failures = 0
-	if saved.Disabled || saved.Quota.Exceeded && saved.Quota.Reason == "credential_quota" || !saved.Quota.ObservedAt.Equal(probe.SentAt) || !quotaWatchSignalsClear(saved.Quota.Signals) {
+	if !base.Quota.NextRecoverAt.After(saved.UpdatedAt) || saved.Disabled || saved.Quota.Exceeded && saved.Quota.Reason == "credential_quota" || !saved.Quota.ObservedAt.Equal(probe.SentAt) || !quotaWatchSignalsClear(saved.Quota.Signals) {
 		decision, reason = "release_superseded", "state_changed"
 		return
 	}

@@ -475,3 +475,134 @@ func TestQuotaWatchProbeErrorCauseAndRedaction(t *testing.T) {
 		t.Fatalf("probe error exposed credential: %s", message)
 	}
 }
+
+func TestQuotaWatchObservationAtWeeklyLimitKeepsCooldown(t *testing.T) {
+	m, a, model, _ := quotaWatchFixture(t)
+	quotaWatchReject(m, a, model)
+	base, _ := m.GetByID(a.ID)
+	updated := base.Clone()
+	probe := quotaWatchClearProbe()
+	probe.Windows["seven_day"] = 100
+	updated.Quota.Signals = encodeQuotaWatchSignals(probe)
+	updated.Quota.ObservedAt = probe.SentAt
+	saved, err := m.updateInternal(context.Background(), base, updated, updateModeQuotaObservation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !saved.Quota.Exceeded || saved.Quota.Reason != "credential_quota" || !saved.Quota.NextRecoverAt.Equal(base.Quota.NextRecoverAt) {
+		t.Fatalf("weekly-limited observation released cooldown: %+v", saved.Quota)
+	}
+}
+
+func TestQuotaWatchNormalRefreshCannotReleaseCooldown(t *testing.T) {
+	m, a, model, _ := quotaWatchFixture(t)
+	a.Quota.Signals = encodeQuotaWatchSignals(quotaWatchClearProbe())
+	a.Quota.ObservedAt = time.Now().Add(-time.Hour)
+	if _, err := m.Update(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
+	quotaWatchReject(m, a, model)
+	base, _ := m.GetByID(a.ID)
+	updated := base.Clone()
+	// A refresh may carry an old clear payload stamped with a new observation time.
+	updated.Quota.ObservedAt = time.Now()
+	saved, err := m.UpdateRefreshedAuth(context.Background(), base, updated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !saved.Quota.Exceeded || saved.Quota.Reason != "credential_quota" || !saved.Quota.NextRecoverAt.Equal(base.Quota.NextRecoverAt) {
+		t.Fatalf("normal refresh released cooldown from carried signals: %+v", saved.Quota)
+	}
+}
+
+func TestQuotaWatchNaturalExpiryDoesNotRecordRelease(t *testing.T) {
+	m, a, model, _ := quotaWatchFixture(t)
+	quotaWatchReject(m, a, model)
+	expiredAt := time.Now().Add(-time.Minute)
+	m.mu.Lock()
+	m.auths[a.ID].Quota.NextRecoverAt = expiredAt
+	m.auths[a.ID].credQuotaForceUntil = expiredAt
+	m.mu.Unlock()
+	now := expiredAt.Add(-time.Minute)
+	m.RegisterExecutor(quotaWatchTestExecutor{schedulerProviderTestExecutor: schedulerProviderTestExecutor{provider: "claude"}, probe: func(context.Context, *Auth) (QuotaProbe, error) {
+		probe := quotaWatchClearProbe()
+		now = time.Now()
+		m.mu.Lock()
+		clearAuthStateOnSuccess(m.auths[a.ID], now)
+		m.mu.Unlock()
+		return probe, nil
+	}})
+	w := newTestQuotaWatch(m, &now)
+	w.sweep(context.Background())
+	if entry := w.entries[a.ID]; entry != nil && !entry.lastRelease.IsZero() {
+		t.Fatal("natural expiry was recorded as a watch release")
+	}
+	quotaWatchReject(m, a, model)
+	w.sweep(context.Background())
+	if entry := w.entries[a.ID]; entry != nil && entry.bounces != 0 {
+		t.Fatal("a new 429 after natural expiry counted as a watch bounce")
+	}
+}
+
+func TestQuotaWatchProbePanicBacksOffAndContinues(t *testing.T) {
+	m, a, model, _ := quotaWatchFixture(t)
+	quotaWatchReject(m, a, model)
+	second := a.Clone()
+	second.ID += "-second"
+	if _, err := m.Register(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+	quotaWatchReject(m, second, model)
+	oldHooks := log.StandardLogger().ReplaceHooks(make(log.LevelHooks))
+	t.Cleanup(func() { log.StandardLogger().ReplaceHooks(oldHooks) })
+	hook := logtest.NewGlobal()
+	contexts := make([]context.Context, 0, 4)
+	m.RegisterExecutor(quotaWatchTestExecutor{schedulerProviderTestExecutor: schedulerProviderTestExecutor{provider: "claude"}, probe: func(ctx context.Context, _ *Auth) (QuotaProbe, error) {
+		contexts = append(contexts, ctx)
+		panic("test-oauth secret panic payload")
+	}})
+	now := time.Now()
+	w := newTestQuotaWatch(m, &now)
+	for attempt, delay := range []time.Duration{5 * time.Minute, 10 * time.Minute} {
+		w.sweep(context.Background())
+		if len(contexts) != 2*(attempt+1) {
+			t.Fatal("panic prevented probing other accounts")
+		}
+		for _, id := range []string{a.ID, second.ID} {
+			entry := w.entries[id]
+			if entry.failures != attempt+1 || !entry.nextProbe.Equal(now.Add(delay)) || !entry.lastRelease.IsZero() {
+				t.Fatalf("panic did not use error backoff: %+v", entry)
+			}
+			saved, _ := m.GetByID(id)
+			if !saved.Quota.Exceeded {
+				t.Fatal("panic released cooldown")
+			}
+		}
+		w.sweep(context.Background())
+		if len(contexts) != 2*(attempt+1) {
+			t.Fatal("panic retried before backoff")
+		}
+		now = now.Add(delay)
+	}
+	for _, ctx := range contexts {
+		if ctx.Err() != context.Canceled {
+			t.Fatal("panic leaked probe deadline context")
+		}
+	}
+	entries := hook.AllEntries()
+	if len(entries) != 4 {
+		t.Fatalf("panic logs = %d, want 4", len(entries))
+	}
+	for _, entry := range entries {
+		if entry.Message != "quota watch: probe_error" || entry.Data["reason"] != "probe_panic" {
+			t.Fatalf("missing panic diagnostic: %+v", entry)
+		}
+		text, err := entry.String()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(text, "test-oauth") || strings.Contains(text, "secret panic payload") {
+			t.Fatal("panic log leaked payload")
+		}
+	}
+}

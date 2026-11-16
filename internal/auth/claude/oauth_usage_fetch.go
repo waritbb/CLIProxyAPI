@@ -20,6 +20,7 @@ func (o *ClaudeAuth) fetchOAuthUsageJSON(ctx context.Context, accessToken string
 	if o == nil || o.httpClient == nil {
 		return nil, fmt.Errorf("fetch Claude OAuth usage: HTTP client is nil")
 	}
+	defer o.httpClient.CloseIdleConnections()
 	accessToken = strings.TrimSpace(accessToken)
 	if accessToken == "" {
 		return nil, fmt.Errorf("fetch Claude OAuth usage: access token is empty")
