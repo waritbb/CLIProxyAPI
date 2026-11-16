@@ -15,6 +15,8 @@ const (
 	quotaWatchBounceMemory = 15 * time.Minute
 )
 
+var errQuotaProbePanic = errors.New("quota prober panicked")
+
 // RunQuotaWatch derives cooling candidates from manager state, including restored
 // cooldowns. Its disposable scheduling state has exactly one goroutine owner.
 func RunQuotaWatch(ctx context.Context, m *Manager) {
@@ -108,11 +110,6 @@ func (w *quotaWatch) probeOne(ctx context.Context, base *Auth, prober QuotaProbe
 	decision, reason := "hold", "incomplete"
 	status := 0
 	defer func() {
-		if recover() != nil {
-			e.failures++
-			e.nextProbe = w.now().Add(quotaWatchErrorBackoff(e.failures))
-			decision, reason = "probe_error", "probe_panic"
-		}
 		fields["reason"] = reason
 		fields["next_probe_in"] = e.nextProbe.Sub(w.now())
 		fields["status"] = status
@@ -129,7 +126,7 @@ func (w *quotaWatch) probeOne(ctx context.Context, base *Auth, prober QuotaProbe
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, quotaWatchProbeTimeout)
 	defer cancel()
-	probe, err := prober.ProbeQuota(probeCtx, base.Clone())
+	probe, err := safeProbeQuota(probeCtx, prober, base.Clone())
 	if err == nil {
 		err = probeCtx.Err()
 	}
@@ -148,15 +145,18 @@ func (w *quotaWatch) probeOne(ctx context.Context, base *Auth, prober QuotaProbe
 		var probeErr *QuotaProbeError
 		if errors.As(err, &probeErr) {
 			status = probeErr.Status
-			wait = max(wait, probeErr.RetryAfter)
+			wait = min(max(wait, probeErr.RetryAfter), 30*time.Minute)
+		}
+		decision, reason = "probe_error", "probe_failed"
+		if errors.Is(err, errQuotaProbePanic) {
+			reason = "probe_panic"
 		}
 		err = quotaProbeLogError(base, err)
 		fields["error"] = err.Error()
 		e.nextProbe = w.now().Add(wait)
-		decision, reason = "probe_error", "probe_failed"
 		return
 	}
-	e.nextProbe = w.now().Add(max(quotaWatchProbeEvery, probe.RetryAfter))
+	e.nextProbe = w.now().Add(min(max(quotaWatchProbeEvery, probe.RetryAfter), 30*time.Minute))
 	fields["windows"] = probe.Windows
 	verdict, why := judgeQuotaWindows(probe)
 	reason = why
@@ -184,6 +184,16 @@ func (w *quotaWatch) probeOne(ctx context.Context, base *Auth, prober QuotaProbe
 	e.cooling = false
 	decision = "released"
 }
+
+func safeProbeQuota(ctx context.Context, prober QuotaProber, auth *Auth) (probe QuotaProbe, err error) {
+	defer func() {
+		if recover() != nil {
+			err = errQuotaProbePanic
+		}
+	}()
+	return prober.ProbeQuota(ctx, auth)
+}
+
 func quotaWatchErrorBackoff(n int) time.Duration {
 	wait := 5 * time.Minute
 	for i := 1; i < n && wait < 30*time.Minute; i++ {

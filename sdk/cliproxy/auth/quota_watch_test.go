@@ -210,8 +210,8 @@ func TestQuotaWatchSchedule(t *testing.T) {
 	if calls != 1 {
 		t.Fatal("hot re-probe")
 	}
-	if !w.entries[a.ID].nextProbe.Equal(now.Add(45 * time.Minute)) {
-		t.Fatal("Retry-After was not honored")
+	if !w.entries[a.ID].nextProbe.Equal(now.Add(30 * time.Minute)) {
+		t.Fatal("Retry-After was not capped at the backoff ceiling")
 	}
 	for i, want := range []time.Duration{5, 10, 20, 30, 30} {
 		if got := quotaWatchErrorBackoff(i + 1); got != want*time.Minute {
@@ -223,7 +223,7 @@ func TestQuotaWatchSchedule(t *testing.T) {
 			t.Fatalf("bounce=%v", got)
 		}
 	}
-	now = now.Add(45 * time.Minute)
+	now = now.Add(30 * time.Minute)
 	w.sweep(context.Background())
 	if calls != 2 {
 		t.Fatal("due retry not probed")

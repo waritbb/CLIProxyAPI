@@ -605,6 +605,10 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 		devinQuotaRestored := (mode == updateModeQuotaObservation || mode == updateModeRefresh && strings.EqualFold(strings.TrimSpace(existing.Provider), "devin")) && applyDevinQuotaRestoration(auth, existing, now)
 		if devinQuotaRestored {
 			cooldownStateChanged = true
+		} else if mode == updateModeQuotaObservation {
+			current := existing.Clone()
+			m.mu.Unlock()
+			return current, false, false, nil
 		} else if existing.Quota.Exceeded && existing.Quota.Reason == "credential_quota" && existing.Quota.NextRecoverAt.After(now) {
 			auth.Unavailable = existing.Unavailable
 			auth.NextRetryAfter = existing.NextRetryAfter
