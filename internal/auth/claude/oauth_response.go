@@ -14,11 +14,11 @@ import (
 	"github.com/andybalholm/brotli"
 )
 
-func readClaudeOAuthResponseBody(resp *http.Response) ([]byte, error) {
+func readClaudeOAuthResponseBody(resp *http.Response, limits ...int64) ([]byte, error) {
 	if resp == nil || resp.Body == nil {
 		return nil, fmt.Errorf("read Claude OAuth response: body is nil")
 	}
-	encoded, errRead := io.ReadAll(resp.Body)
+	encoded, errRead := readClaudeOAuthBytes(resp.Body, limits...)
 	if errRead != nil {
 		return nil, errRead
 	}
@@ -29,7 +29,7 @@ func readClaudeOAuthResponseBody(resp *http.Response) ([]byte, error) {
 			continue
 		}
 		var errDecode error
-		encoded, errDecode = decodeClaudeOAuthEncoding(encoded, encoding)
+		encoded, errDecode = decodeClaudeOAuthEncoding(encoded, encoding, limits...)
 		if errDecode != nil {
 			return nil, errDecode
 		}
@@ -37,7 +37,7 @@ func readClaudeOAuthResponseBody(resp *http.Response) ([]byte, error) {
 	return encoded, nil
 }
 
-func decodeClaudeOAuthEncoding(encoded []byte, encoding string) ([]byte, error) {
+func decodeClaudeOAuthEncoding(encoded []byte, encoding string, limits ...int64) ([]byte, error) {
 	var reader io.ReadCloser
 	switch encoding {
 	case "gzip":
@@ -60,7 +60,7 @@ func decodeClaudeOAuthEncoding(encoded []byte, encoding string) ([]byte, error) 
 	default:
 		return nil, fmt.Errorf("decode Claude OAuth response: unsupported content encoding %q", encoding)
 	}
-	decoded, errDecoded := io.ReadAll(reader)
+	decoded, errDecoded := readClaudeOAuthBytes(reader, limits...)
 	if errDecoded != nil {
 		_ = reader.Close()
 		return nil, fmt.Errorf("decode Claude OAuth %s response: %w", encoding, errDecoded)
@@ -69,4 +69,18 @@ func decodeClaudeOAuthEncoding(encoded []byte, encoding string) ([]byte, error) 
 		return nil, fmt.Errorf("close Claude OAuth %s decoder: %w", encoding, errClose)
 	}
 	return decoded, nil
+}
+
+func readClaudeOAuthBytes(reader io.Reader, limits ...int64) ([]byte, error) {
+	if len(limits) == 0 || limits[0] <= 0 {
+		return io.ReadAll(reader)
+	}
+	body, err := io.ReadAll(io.LimitReader(reader, limits[0]+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > limits[0] {
+		return nil, fmt.Errorf("Claude OAuth response exceeds body limit")
+	}
+	return body, nil
 }

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/MoeForge/moego/ojson"
+	claudeauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	sigcompat "github.com/router-for-me/CLIProxyAPI/v8/internal/signature"
@@ -34,6 +35,7 @@ type ClaudeExecutor struct {
 	requestLogProvider      string
 	upstreamModelNormalizer func(string) string
 	oauthProfileFetcher     claudeOAuthProfileFetcher
+	oauthUsageFetcher       func(context.Context, *cliproxyauth.Auth, string) (*claudeauth.OAuthUsage, error)
 	// oauthToolAliases is shared by every ForAPIKey copy of this executor;
 	// constructors allocate it so copies made per request reuse one store.
 	oauthToolAliases *claudeOAuthToolAliasStore

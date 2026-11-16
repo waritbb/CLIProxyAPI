@@ -245,6 +245,9 @@ func (o *ClaudeAuth) fetchOAuthControlPlaneJSON(ctx context.Context, endpoint, a
 	applyClaudeOAuthAxiosHeaders(req)
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Cache-Control", "no-cache")
+	if endpoint == UsageURL {
+		req.Header.Set("anthropic-beta", "oauth-2025-04-20")
+	}
 
 	resp, errDo := o.httpClient.Do(req)
 	if errDo != nil {
@@ -255,7 +258,16 @@ func (o *ClaudeAuth) fetchOAuthControlPlaneJSON(ctx context.Context, endpoint, a
 			log.Errorf("failed to close Claude OAuth %s response body: %v", label, errClose)
 		}
 	}()
-	body, errRead := readClaudeOAuthResponseBody(resp)
+	var body []byte
+	var errRead error
+	if endpoint == UsageURL {
+		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			return nil, &OAuthUsageStatusError{Status: resp.StatusCode, RetryAfter: oauthUsageRetryAfter(resp.Header.Get("Retry-After"), time.Now())}
+		}
+		body, errRead = readClaudeOAuthResponseBody(resp, oauthUsageBodyLimit)
+	} else {
+		body, errRead = readClaudeOAuthResponseBody(resp)
+	}
 	if errRead != nil {
 		return nil, fmt.Errorf("read Claude OAuth %s response: %w", label, errRead)
 	}
