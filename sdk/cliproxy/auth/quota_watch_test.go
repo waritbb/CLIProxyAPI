@@ -5,11 +5,15 @@ import (
 	"errors"
 	"math"
 	"net/http"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	log "github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 )
 
 type quotaWatchTestExecutor struct {
@@ -91,6 +95,9 @@ func TestQuotaWatchRestoredCooldownRelease(t *testing.T) {
 			if calls != 1 || got.Quota.Reason == "credential_quota" {
 				t.Fatalf("calls=%d, credential quota not released: %+v", calls, got.Quota)
 			}
+			if registry.GetGlobalRegistry().IsModelSuspendedForClient(a.ID, model) {
+				t.Fatal("registry reporting model stayed suspended")
+			}
 			if blocked, _, _ := isAuthBlockedForModel(got, model, time.Now()); blocked {
 				t.Fatal("reporting model stayed blocked")
 			}
@@ -130,6 +137,13 @@ func TestQuotaWatchMidProbe429Fence(t *testing.T) {
 	if w.entries[a.ID] == nil {
 		t.Fatal("cooldown was never probed")
 	}
+	if !w.entries[a.ID].lastRelease.IsZero() {
+		t.Fatal("superseded release recorded lastRelease")
+	}
+	w.sweep(context.Background())
+	if w.entries[a.ID].bounces != 0 {
+		t.Fatal("superseded release counted a bounce")
+	}
 	if !w.entries[a.ID].nextProbe.Equal(now.Add(5 * time.Minute)) {
 		t.Fatal("superseded release should wait normal cadence")
 	}
@@ -160,7 +174,7 @@ func TestJudgeQuotaWindows(t *testing.T) {
 		{"incomplete", QuotaProbe{Windows: map[string]float64{"five_hour": 0, "seven_day": 0}}, false},
 		{"missing_required", QuotaProbe{Complete: true, Windows: map[string]float64{"seven_day": 0}}, false},
 		{"weekly_limit", QuotaProbe{Complete: true, Windows: map[string]float64{"five_hour": 0, "seven_day": 100}}, false},
-		{"model_limit", QuotaProbe{Complete: true, Windows: map[string]float64{"five_hour": 0, "seven_day": 0, "seven_day_opus": 100}}, false},
+		{"model_limit", QuotaProbe{Complete: true, Windows: map[string]float64{"five_hour": 0, "seven_day": 0, "seven_day_opus": 100, "limits/fable": math.NaN(), "iguana_necktie": 100}}, true},
 		{"nan", QuotaProbe{Complete: true, Windows: map[string]float64{"five_hour": 0, "seven_day": math.NaN()}}, false},
 		{"infinite", QuotaProbe{Complete: true, Windows: map[string]float64{"five_hour": 0, "seven_day": math.Inf(1)}}, false},
 		{"negative", QuotaProbe{Complete: true, Windows: map[string]float64{"five_hour": 0, "seven_day": -1}}, false},
@@ -340,5 +354,124 @@ func TestQuotaWatchNormalCadenceAndErrorReset(t *testing.T) {
 	w.sweep(context.Background())
 	if calls != count+1 {
 		t.Fatal("normal probe not due")
+	}
+}
+
+func quotaWatchLifecycle(a *Auth) []any {
+	return []any{a.RefreshFailures, a.RefreshError, a.NextRefreshAfter, a.LastRefreshedAt, a.RequiresSignIn, a.RenewalVerified, a.LastRenewalVerifiedAt, a.RenewalWarnedRefreshToken, a.RenewalEventAt, a.AdoptedAt, a.AdoptedGrantHash, a.InferenceVerified, a.LastInferenceVerifiedAt, a.RejectedAccessToken, a.RejectedSIWCAccessToken, a.RejectedRefreshToken, a.RejectedSIWCRefreshToken}
+}
+func TestQuotaWatchPreservesRefreshLifecycleAndConcurrentPatch(t *testing.T) {
+	m, a, model, _ := quotaWatchFixture(t)
+	quotaWatchReject(m, a, model)
+	m.mu.Lock()
+	current := m.auths[a.ID]
+	current.RefreshFailures = 3
+	current.RefreshError = &Error{Code: "refresh_failed", Message: "renewal unavailable"}
+	current.NextRefreshAfter = time.Now().Add(time.Hour)
+	current.LastRefreshedAt = time.Now().Add(-time.Hour)
+	current.RenewalVerified = false
+	current.RejectedAccessToken = "previous-access"
+	current.RejectedSIWCAccessToken = "previous-siwc"
+	current.RejectedRefreshToken = "previous-refresh"
+	current.RejectedSIWCRefreshToken = "previous-siwc-refresh"
+	current.RenewalWarnedRefreshToken = "previous-warning"
+	current.RenewalEventAt = time.Now().Add(-time.Minute)
+	// Include zero adoption state: an observation must not invent adoption.
+	current.AdoptedAt = time.Time{}
+	current.AdoptedGrantHash = ""
+	before := current.Clone()
+	m.mu.Unlock()
+	m.RegisterExecutor(quotaWatchTestExecutor{schedulerProviderTestExecutor: schedulerProviderTestExecutor{provider: "claude"}, probe: func(context.Context, *Auth) (QuotaProbe, error) {
+		p := quotaWatchClearProbe()
+		// This PATCH is concurrent with the observation without a newer failure.
+		m.mu.Lock()
+		m.auths[a.ID].Metadata["priority"] = float64(7)
+		before = m.auths[a.ID].Clone()
+		m.mu.Unlock()
+		return p, nil
+	}})
+	now := time.Now()
+	w := newTestQuotaWatch(m, &now)
+	w.sweep(context.Background())
+	got, _ := m.GetByID(a.ID)
+	if got.Quota.Exceeded {
+		t.Fatal("restored quota not released")
+	}
+	if !reflect.DeepEqual(quotaWatchLifecycle(got), quotaWatchLifecycle(before)) {
+		t.Fatalf("refresh lifecycle changed: got %v, want %v", quotaWatchLifecycle(got), quotaWatchLifecycle(before))
+	}
+	if got.Metadata["priority"] != float64(7) {
+		t.Fatal("concurrent priority PATCH lost")
+	}
+}
+func TestQuotaWatchUnsupportedCredentialChange(t *testing.T) {
+	for _, change := range []string{"access_token", "credential_version"} {
+		t.Run(change, func(t *testing.T) {
+			m, a, model, _ := quotaWatchFixture(t)
+			quotaWatchReject(m, a, model)
+			m.mu.Lock()
+			delete(m.auths[a.ID].Metadata, "access_token")
+			m.mu.Unlock()
+			calls := 0
+			m.RegisterExecutor(quotaWatchTestExecutor{schedulerProviderTestExecutor: schedulerProviderTestExecutor{provider: "claude"}, probe: func(_ context.Context, a *Auth) (QuotaProbe, error) {
+				calls++
+				if a.Metadata["access_token"] == nil {
+					return QuotaProbe{}, ErrQuotaProbeUnsupported
+				}
+				p := quotaWatchClearProbe()
+				p.Windows["seven_day"] = 100
+				return p, nil
+			}})
+			now := time.Now()
+			w := newTestQuotaWatch(m, &now)
+			w.sweep(context.Background())
+			if calls != 1 || !w.entries[a.ID].nextProbe.After(now.Add(time.Hour)) {
+				t.Fatal("unsupported not deferred")
+			}
+			w.sweep(context.Background())
+			if calls != 1 {
+				t.Fatal("unchanged unsupported credential reprobed")
+			}
+			m.mu.Lock()
+			if change == "access_token" {
+				m.auths[a.ID].Metadata["access_token"] = "supplied-token"
+			} else {
+				m.auths[a.ID].CredentialVersion++
+			}
+			m.mu.Unlock()
+			now = now.Add(quotaWatchProbeEvery)
+			w.sweep(context.Background())
+			if calls != 2 {
+				t.Fatalf("updated credential not probed within cadence: calls=%d", calls)
+			}
+		})
+	}
+}
+
+func TestQuotaWatchProbeErrorCauseAndRedaction(t *testing.T) {
+	m, a, model, _ := quotaWatchFixture(t)
+	quotaWatchReject(m, a, model)
+	oldHooks := log.StandardLogger().ReplaceHooks(make(log.LevelHooks))
+	t.Cleanup(func() { log.StandardLogger().ReplaceHooks(oldHooks) })
+	hook := logtest.NewGlobal()
+	cause := errors.New("usage parse failed; Authorization: Bearer header-secret; token test-oauth")
+	probeErr := &QuotaProbeError{Err: cause}
+	if !strings.Contains(probeErr.Error(), cause.Error()) || !errors.Is(probeErr, cause) {
+		t.Fatal("wrapped probe cause lost")
+	}
+	m.RegisterExecutor(quotaWatchTestExecutor{schedulerProviderTestExecutor: schedulerProviderTestExecutor{provider: "claude"}, probe: func(context.Context, *Auth) (QuotaProbe, error) { return QuotaProbe{}, probeErr }})
+	now := time.Now()
+	w := newTestQuotaWatch(m, &now)
+	w.sweep(context.Background())
+	entry := hook.LastEntry()
+	if entry == nil || entry.Message != "quota watch: probe_error" {
+		t.Fatal("probe error not logged")
+	}
+	message, ok := entry.Data["error"].(string)
+	if !ok || !strings.Contains(message, "usage parse failed") {
+		t.Fatalf("probe cause missing: %v", entry.Data)
+	}
+	if strings.Contains(message, "test-oauth") || strings.Contains(message, "header-secret") {
+		t.Fatalf("probe error exposed credential: %s", message)
 	}
 }

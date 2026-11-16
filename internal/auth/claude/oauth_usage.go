@@ -31,7 +31,7 @@ func (e *OAuthUsageStatusError) Error() string {
 }
 
 func (o *ClaudeAuth) FetchOAuthUsage(ctx context.Context, accessToken string) (*OAuthUsage, error) {
-	body, errFetch := o.fetchOAuthControlPlaneJSON(ctx, UsageURL, accessToken, "usage")
+	body, errFetch := o.fetchOAuthUsageJSON(ctx, accessToken)
 	if errFetch != nil {
 		return nil, errFetch
 	}
@@ -68,28 +68,14 @@ func parseOAuthUsage(body []byte) (*OAuthUsage, error) {
 	_, hasFive := fields["five_hour"]
 	seven, hasSeven := fields["seven_day"]
 	usage.Complete = hasFive && hasSeven && !isUsageNull(seven)
-	fable, hasFable, errFable := parseOAuthFableLimit(fields["limits"])
-	if errFable != nil {
-		return nil, errFable
-	}
-	for key, raw := range fields {
-		known := key == "five_hour" || key == "seven_day" || strings.HasPrefix(key, "seven_day_") || key == "iguana_necktie"
-		if !known {
-			if key == "limits" || key == "extra_usage" {
-				continue
-			}
-			var obj map[string]json.RawMessage
-			_ = json.Unmarshal(raw, &obj)
-			_, utilization := obj["utilization"]
-			_, resets := obj["resets_at"]
-			if utilization || resets || strings.HasPrefix(key, "five_hour_") {
-				return nil, fmt.Errorf("unrecognized Claude OAuth usage window")
-			}
+	for _, key := range []string{"five_hour", "seven_day"} {
+		raw, present := fields[key]
+		if !present {
 			continue
 		}
 		if isUsageNull(raw) {
 			if key == "five_hour" {
-				usage.Windows["five_hour"] = 0
+				usage.Windows[key] = 0
 			}
 			continue
 		}
@@ -97,43 +83,14 @@ func parseOAuthUsage(body []byte) (*OAuthUsage, error) {
 		if err := json.Unmarshal(raw, &window); err != nil || window == nil {
 			return nil, fmt.Errorf("invalid Claude OAuth usage window")
 		}
-		used, errUsed := usagePercent(window["utilization"])
-		if errUsed != nil {
-			return nil, errUsed
+		used, err := usagePercent(window["utilization"])
+		if err != nil {
+			return nil, err
 		}
 		if err := validateUsageReset(window["resets_at"]); err != nil {
 			return nil, err
 		}
-		if key == "iguana_necktie" && hasFable {
-			credit := false
-			for _, field := range []string{"limit_dollars", "used_dollars", "remaining_dollars"} {
-				if v, ok := window[field]; ok && !isUsageNull(v) {
-					var n float64
-					if json.Unmarshal(v, &n) != nil {
-						var text string
-						if json.Unmarshal(v, &text) != nil {
-							return nil, fmt.Errorf("invalid Claude OAuth dollar balance")
-						}
-						parsed, errParse := strconv.ParseFloat(strings.TrimSpace(text), 64)
-						if errParse != nil {
-							return nil, fmt.Errorf("invalid Claude OAuth dollar balance")
-						}
-						n = parsed
-					}
-					if math.IsNaN(n) || math.IsInf(n, 0) {
-						return nil, fmt.Errorf("invalid Claude OAuth dollar balance")
-					}
-					credit = true
-				}
-			}
-			if !credit {
-				continue
-			}
-		}
 		usage.Windows[key] = used
-	}
-	if hasFable {
-		usage.Windows["limits/fable"] = fable
 	}
 	return usage, nil
 }
@@ -143,7 +100,7 @@ func usagePercent(raw json.RawMessage) (float64, error) {
 	if len(raw) == 0 || isUsageNull(raw) {
 		return 0, fmt.Errorf("missing Claude OAuth usage utilization")
 	}
-	if err := json.Unmarshal(raw, &value); err != nil || math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > 100 {
+	if err := json.Unmarshal(raw, &value); err != nil || math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
 		return 0, fmt.Errorf("invalid Claude OAuth usage utilization")
 	}
 	return value, nil
@@ -160,44 +117,6 @@ func validateUsageReset(raw json.RawMessage) error {
 		return fmt.Errorf("invalid Claude OAuth usage reset")
 	}
 	return nil
-}
-func parseOAuthFableLimit(raw json.RawMessage) (float64, bool, error) {
-	if len(raw) == 0 || isUsageNull(raw) {
-		return 0, false, nil
-	}
-	var limits []struct {
-		Kind  string `json:"kind"`
-		Scope struct {
-			Model struct {
-				DisplayName string `json:"display_name"`
-			} `json:"model"`
-		} `json:"scope"`
-		Percent  json.RawMessage `json:"percent"`
-		ResetsAt json.RawMessage `json:"resets_at"`
-		Active   bool            `json:"is_active"`
-	}
-	if err := json.Unmarshal(raw, &limits); err != nil {
-		return 0, false, fmt.Errorf("invalid Claude OAuth usage limits")
-	}
-	var chosen float64
-	found, active := false, false
-	for _, limit := range limits {
-		name := strings.ToLower(strings.TrimSpace(limit.Scope.Model.DisplayName))
-		if strings.ToLower(strings.TrimSpace(limit.Kind)) != "weekly_scoped" || (name != "fable" && name != "fable 5") {
-			continue
-		}
-		percent, err := usagePercent(limit.Percent)
-		if err != nil {
-			return 0, false, err
-		}
-		if err := validateUsageReset(limit.ResetsAt); err != nil {
-			return 0, false, err
-		}
-		if !found || !active && limit.Active {
-			chosen, found, active = percent, true, limit.Active
-		}
-	}
-	return chosen, found, nil
 }
 
 // Validate object keys before unmarshalling maps, which otherwise lose duplicates.

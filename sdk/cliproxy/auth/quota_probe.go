@@ -24,7 +24,7 @@ type QuotaProbeError struct {
 }
 
 func (e *QuotaProbeError) Error() string {
-	return fmt.Sprintf("quota probe failed with status %d", e.Status)
+	return fmt.Sprintf("quota probe failed with status %d: %v", e.Status, e.Err)
 }
 func (e *QuotaProbeError) Unwrap() error { return e.Err }
 
@@ -49,15 +49,14 @@ func judgeQuotaWindows(p QuotaProbe) (QuotaVerdict, string) {
 		return QuotaVerdictHold, "incomplete"
 	}
 	for _, key := range []string{"five_hour", "seven_day"} {
-		if _, ok := p.Windows[key]; !ok {
+		used, ok := p.Windows[key]
+		if !ok {
 			return QuotaVerdictHold, "missing_required_window"
 		}
-	}
-	for _, used := range p.Windows {
-		if math.IsNaN(used) || math.IsInf(used, 0) || used < 0 || used > 100 {
+		if math.IsNaN(used) || math.IsInf(used, 0) || used < 0 {
 			return QuotaVerdictHold, "bad_value"
 		}
-		if used == 100 {
+		if used >= 100 {
 			return QuotaVerdictHold, "window_at_limit"
 		}
 	}
@@ -78,16 +77,24 @@ func quotaWatchSignalsClear(signals map[string]string) bool {
 		return false
 	}
 	p := QuotaProbe{Complete: true, Windows: make(map[string]float64)}
-	for key, value := range signals {
-		if !strings.HasPrefix(key, quotaWatchSignalPrefix) || key == quotaWatchSignalPrefix+"complete" {
-			continue
-		}
-		used, err := strconv.ParseFloat(value, 64)
+	for _, key := range []string{"five_hour", "seven_day"} {
+		used, err := strconv.ParseFloat(signals[quotaWatchSignalPrefix+key], 64)
 		if err != nil {
 			return false
 		}
-		p.Windows[strings.TrimPrefix(key, quotaWatchSignalPrefix)] = used
+		p.Windows[key] = used
 	}
+
 	v, _ := judgeQuotaWindows(p)
 	return v == QuotaVerdictClear
+}
+
+func quotaProbeLogError(a *Auth, err error) error {
+	message := err.Error()
+	for _, token := range []string{authAccessToken(a), authRefreshToken(a), authSIWCTokenField(a, "access_token"), authSIWCTokenField(a, "refresh_token")} {
+		if token != "" {
+			message = strings.ReplaceAll(message, token, "[redacted]")
+		}
+	}
+	return errors.New(sanitizeRenewalMessage(message))
 }

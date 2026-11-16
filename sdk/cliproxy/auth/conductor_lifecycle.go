@@ -277,6 +277,7 @@ const (
 	updateModeReplace updateAuthMode = iota
 	updateModeRefresh
 	updateModePrepare
+	updateModeQuotaObservation
 )
 
 // UpdatePreparedAuth atomically merges request preparation results into the latest runtime auth
@@ -425,13 +426,13 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 	if existing.RegistrationEpoch > m.authEpochs[auth.ID] {
 		m.authEpochs[auth.ID] = existing.RegistrationEpoch
 	}
-	if (mode == updateModeRefresh || mode == updateModePrepare) && base != nil && existing.RegistrationEpoch != base.RegistrationEpoch {
+	if (mode == updateModeRefresh || mode == updateModePrepare || mode == updateModeQuotaObservation) && base != nil && existing.RegistrationEpoch != base.RegistrationEpoch {
 		m.mu.Unlock()
 		return nil, false, false, fmt.Errorf("update auth %s: stale registration epoch %d != %d", auth.ID, base.RegistrationEpoch, existing.RegistrationEpoch)
 	}
 	// Do not let an in-flight refresh overwrite credentials committed after its snapshot.
-	if mode == updateModeRefresh && base != nil && (existing.CredentialVersion != base.CredentialVersion || CredentialsChanged(base, existing)) {
-		if auth.CodexRefreshPatch == nil || !auth.CodexRefreshPatch.CanApplyTo(existing.Metadata) {
+	if (mode == updateModeRefresh || mode == updateModeQuotaObservation) && base != nil && (existing.CredentialVersion != base.CredentialVersion || CredentialsChanged(base, existing)) {
+		if mode == updateModeQuotaObservation || auth.CodexRefreshPatch == nil || !auth.CodexRefreshPatch.CanApplyTo(existing.Metadata) {
 			current := existing.Clone()
 			m.mu.Unlock()
 			// Discarded stale refresh: committed=false so callers do not
@@ -448,6 +449,8 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 			auth = merged
 			NormalizeCredentialMetadata(auth.Metadata)
 		}
+	} else if mode == updateModeQuotaObservation {
+		auth = mergeQuotaObservedAuth(base, existing, auth)
 	} else if mode == updateModePrepare {
 		merged := MergePreparedAuth(base, existing, auth)
 		if merged != nil {
@@ -599,7 +602,7 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 		// A refresh that confirms quota restoration (issue #6690) releases the
 		// credential-wide cooldown early; otherwise the active credential
 		// quota below is preserved exactly as before.
-		devinQuotaRestored := mode == updateModeRefresh && applyDevinQuotaRestoration(auth, existing, now)
+		devinQuotaRestored := (mode == updateModeRefresh || mode == updateModeQuotaObservation) && applyDevinQuotaRestoration(auth, existing, now)
 		if devinQuotaRestored {
 			cooldownStateChanged = true
 		} else if existing.Quota.Exceeded && existing.Quota.Reason == "credential_quota" && existing.Quota.NextRecoverAt.After(now) {
@@ -673,6 +676,7 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 	auth.EnsureIndex()
 	// Save before publication, including the transactional Meta mint path.
 	// Runtime-only changes made during I/O are merged below, never overwritten.
+	preserveQuotaObservationLifecycle(mode, auth, existing)
 	existingBeforeSave := existing.Clone()
 	refreshPatchBeforeSave := auth.CodexRefreshPatch
 	persistMetaMint := (mode == updateModePrepare || mode == updateModeRefresh) && strings.EqualFold(strings.TrimSpace(auth.Provider), "meta")
@@ -734,6 +738,7 @@ func (m *Manager) updateInternalLocked(ctx context.Context, base, auth *Auth, mo
 			}
 		}
 	}
+	preserveQuotaObservationLifecycle(mode, auth, existing)
 	if existing.Generation >= auth.Generation {
 		auth.Generation = existing.Generation + 1
 	}

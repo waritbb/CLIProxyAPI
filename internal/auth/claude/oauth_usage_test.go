@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -16,45 +17,46 @@ func TestParseOAuthUsage(t *testing.T) {
 	for _, tc := range []struct {
 		name, body string
 		complete   bool
-		count      int
+		windows    map[string]float64
 	}{
-		{"reset", `{"five_hour":null,"seven_day":{"utilization":0,"resets_at":"2026-11-19T08:00:00Z"},"seven_day_opus":null}`, true, 2},
-		{"limited", `{"five_hour":null,"seven_day":{"utilization":100}}`, true, 2},
-		{"all_windows", `{"five_hour":{"utilization":1},"seven_day":{"utilization":2},"seven_day_oauth_apps":{"utilization":3},"seven_day_sonnet":{"utilization":4},"seven_day_cowork":{"utilization":5},"iguana_necktie":{"utilization":6}}`, true, 6},
-		{"missing_five", `{"seven_day":{"utilization":0}}`, false, 1},
-		{"null_seven", `{"five_hour":null,"seven_day":null}`, false, 1},
-		{"missing_seven", `{"five_hour":null}`, false, 1},
-		{"unknown_metadata", `{"five_hour":null,"seven_day":{"utilization":0},"extra_usage":{"is_enabled":false}}`, true, 2},
-		{"fable", `{"five_hour":null,"seven_day":{"utilization":0},"iguana_necktie":{"utilization":10},"limits":[{"kind":"weekly_scoped","scope":{"model":{"display_name":"Fable 5"}},"percent":100,"is_active":true}]}`, true, 3},
+		{"empty", `{}`, false, map[string]float64{}},
+		{"reset", `{"five_hour":null,"seven_day":{"utilization":0}}`, true, map[string]float64{"five_hour": 0, "seven_day": 0}},
+		{"limited", `{"five_hour":null,"seven_day":{"utilization":100}}`, true, map[string]float64{"five_hour": 0, "seven_day": 100}},
+		{"nonzero", `{"five_hour":{"utilization":17.5},"seven_day":{"utilization":89}}`, true, map[string]float64{"five_hour": 17.5, "seven_day": 89}},
+		{"over_limit", `{"five_hour":{"utilization":101},"seven_day":{"utilization":150}}`, true, map[string]float64{"five_hour": 101, "seven_day": 150}},
+		{"missing_five", `{"seven_day":{"utilization":23}}`, false, map[string]float64{"seven_day": 23}},
+		{"null_seven", `{"five_hour":null,"seven_day":null}`, false, map[string]float64{"five_hour": 0}},
+		{"missing_seven", `{"five_hour":null}`, false, map[string]float64{"five_hour": 0}},
+		{"case_aliases_cannot_override", `{"five_hour":{"utilization":50,"Utilization":0},"seven_day":{"utilization":100,"Utilization":0},"Seven_day":{"utilization":0}}`, true, map[string]float64{"five_hour": 50, "seven_day": 100}},
+		{"top_case_alias_only", `{"Five_hour":null,"Seven_day":{"utilization":0}}`, false, map[string]float64{}},
+		{"ignored_model_limits", `{"five_hour":null,"seven_day":{"utilization":37},"seven_day_opus":{"utilization":100},"seven_day_new":42,"iguana_necktie":{"utilization":100},"limits":[{"kind":"weekly_scoped","scope":{"model":{"display_name":"Fable 5"}},"percent":100,"Percent":0}]}`, true, map[string]float64{"five_hour": 0, "seven_day": 37}},
+		{"ignored_malformed_metadata", `{"five_hour":null,"seven_day":{"utilization":37},"limits":"unknown","iguana_necktie":42,"new_window":{"utilization":100}}`, true, map[string]float64{"five_hour": 0, "seven_day": 37}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			u, err := parseOAuthUsage([]byte(tc.body))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if u.Complete != tc.complete || len(u.Windows) != tc.count {
-				t.Fatalf("got %+v", u)
-			}
-			if tc.name == "fable" && u.Windows["limits/fable"] != 100 {
-				t.Fatal("Fable limit not used")
+			if u.Complete != tc.complete || !reflect.DeepEqual(u.Windows, tc.windows) {
+				t.Fatalf("got %+v, want complete=%v windows=%v", u, tc.complete, tc.windows)
 			}
 		})
 	}
+
 	for _, body := range []string{
-		`[]`, `null`, `{}`, `{"five_hour":null,"five_hour":null,"seven_day":{"utilization":0}}`,
+		`[]`, `null`, `{"five_hour":null,"five_hour":null,"seven_day":{"utilization":0}}`,
 		`{"five_hour":null,"seven_day":{"utilization":0,"utilization":1}}`,
 		`{"five_hour":null,"seven_day":{"utilization":"0"}}`,
 		`{"five_hour":null,"seven_day":{"utilization":null}}`,
 		`{"five_hour":null,"seven_day":{"utilization":-1}}`,
-		`{"five_hour":null,"seven_day":{"utilization":101}}`,
+		`{"five_hour":null,"seven_day":{"utilization":1e999}}`,
+		`{"five_hour":null,"seven_day":{"Utilization":0}}`,
 		`{"five_hour":null,"seven_day":{"utilization":0,"resets_at":"bad"}}`,
-		`{"five_hour":null,"seven_day":{"utilization":0},"seven_day_new":42}`,
-		`{"five_hour":null,"seven_day":{"utilization":0},"new_window":{"utilization":100}}`,
 		`{"five_hour":null,"seven_day":{"utilization":0}} {}`,
 		strings.Repeat(" ", 65537) + `{}`,
 	} {
-		u, err := parseOAuthUsage([]byte(body))
-		if err == nil && u.Complete {
+		_, err := parseOAuthUsage([]byte(body))
+		if err == nil {
 			t.Fatalf("unsafe response accepted: %.100s", body)
 		}
 	}

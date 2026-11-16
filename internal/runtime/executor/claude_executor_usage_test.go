@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -16,11 +17,11 @@ func TestClaudeProbeQuota(t *testing.T) {
 		if token != "sk-ant-oat-test" || auth.ProxyURL != a.ProxyURL {
 			t.Fatal("credential snapshot not forwarded")
 		}
-		return &claudeauth.OAuthUsage{Complete: true, Windows: map[string]float64{"five_hour": 0, "seven_day": 0}}, nil
+		return &claudeauth.OAuthUsage{Complete: true, Windows: map[string]float64{"five_hour": 17.5, "seven_day": 100}}, nil
 	}}
 	before := time.Now()
 	p, err := e.ProbeQuota(context.Background(), a)
-	if err != nil || !p.Complete || p.SentAt.Before(before) || p.SentAt.After(time.Now()) {
+	if err != nil || !p.Complete || !reflect.DeepEqual(p.Windows, map[string]float64{"five_hour": 17.5, "seven_day": 100}) || p.SentAt.Before(before) || p.SentAt.After(time.Now()) {
 		t.Fatalf("probe=%+v err=%v", p, err)
 	}
 	e.oauthUsageFetcher = func(context.Context, *cliproxyauth.Auth, string) (*claudeauth.OAuthUsage, error) {

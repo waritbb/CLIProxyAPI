@@ -3,10 +3,8 @@ package auth
 import (
 	"context"
 	"errors"
-	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -43,6 +41,7 @@ type quotaWatchEntry struct {
 	nextProbe         time.Time
 	failures, bounces int
 	lastRelease       time.Time
+	unsupported       *Auth
 	cooling           bool
 }
 
@@ -68,6 +67,10 @@ func (w *quotaWatch) sweep(ctx context.Context) {
 		if e == nil {
 			e = &quotaWatchEntry{}
 			w.entries[a.ID] = e
+		}
+		if e.unsupported != nil && (e.unsupported.CredentialVersion != a.CredentialVersion || CredentialsChanged(e.unsupported, a)) {
+			e.nextProbe = now
+			e.unsupported = nil
 		}
 		if !e.cooling && !e.lastRelease.IsZero() {
 			if now.Sub(e.lastRelease) <= quotaWatchBounceMemory {
@@ -125,7 +128,9 @@ func (w *quotaWatch) probeOne(ctx context.Context, base *Auth, prober QuotaProbe
 		err = probeCtx.Err()
 	}
 	cancel()
+	e.unsupported = nil
 	if errors.Is(err, ErrQuotaProbeUnsupported) {
+		e.unsupported = base.Clone()
 		decision = "unsupported"
 		reason = "unsupported"
 		e.nextProbe = base.Quota.NextRecoverAt
@@ -139,6 +144,8 @@ func (w *quotaWatch) probeOne(ctx context.Context, base *Auth, prober QuotaProbe
 			status = probeErr.Status
 			wait = max(wait, probeErr.RetryAfter)
 		}
+		err = quotaProbeLogError(base, err)
+		fields["error"] = err.Error()
 		e.nextProbe = w.now().Add(wait)
 		decision, reason = "probe_error", "probe_failed"
 		return
@@ -154,7 +161,7 @@ func (w *quotaWatch) probeOne(ctx context.Context, base *Auth, prober QuotaProbe
 	updated := base.Clone()
 	updated.Quota.Signals = encodeQuotaWatchSignals(probe)
 	updated.Quota.ObservedAt = probe.SentAt
-	saved, errUpdate := w.m.UpdateRefreshedAuth(context.WithoutCancel(ctx), base, updated)
+	saved, errUpdate := w.m.updateInternal(context.WithoutCancel(ctx), base, updated, updateModeQuotaObservation)
 	if errUpdate != nil || saved == nil {
 		e.failures++
 		e.nextProbe = w.now().Add(quotaWatchErrorBackoff(e.failures))
@@ -166,17 +173,7 @@ func (w *quotaWatch) probeOne(ctx context.Context, base *Auth, prober QuotaProbe
 		decision, reason = "release_superseded", "state_changed"
 		return
 	}
-	supportedModels, regEpoch := registry.GetGlobalRegistry().GetModelsAndEpochForClient(saved.ID)
-	projections := make([]registry.ClientModelProjection, 0, len(supportedModels))
-	for _, sm := range supportedModels {
-		if sm == nil || strings.TrimSpace(sm.ID) == "" {
-			continue
-		}
-		projections = append(projections, w.m.clientModelProjectionForAuth(saved, sm.ID, w.now()))
-	}
-	if len(projections) > 0 {
-		registry.GetGlobalRegistry().ApplyClientModelProjections(saved.ID, regEpoch, saved.Generation, projections)
-	}
+	w.m.projectAuthModels(saved, w.now())
 	e.lastRelease = w.now()
 	e.cooling = false
 	decision = "released"
