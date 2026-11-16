@@ -960,9 +960,7 @@ func devinQuotaObservationRestored(auth, existing *Auth, now time.Time) bool {
 	if auth == nil || existing == nil {
 		return false
 	}
-	if !strings.EqualFold(strings.TrimSpace(existing.Provider), "devin") {
-		return false
-	}
+	isDevin := strings.EqualFold(strings.TrimSpace(existing.Provider), "devin")
 	if !existing.Quota.Exceeded || existing.Quota.Reason != "credential_quota" || !existing.Quota.NextRecoverAt.After(now) {
 		return false
 	}
@@ -972,6 +970,9 @@ func devinQuotaObservationRestored(auth, existing *Auth, now time.Time) bool {
 	}
 	if !observedAt.After(existing.Quota.ObservedAt) || !existing.UpdatedAt.IsZero() && observedAt.Before(existing.UpdatedAt) {
 		return false
+	}
+	if !isDevin {
+		return quotaWatchSignalsClear(auth.Quota.Signals)
 	}
 	daily, okDaily := devinRemainingPercent(auth.Quota.Signals["daily_quota_remaining_percent"])
 	weekly, okWeekly := devinRemainingPercent(auth.Quota.Signals["weekly_quota_remaining_percent"])
