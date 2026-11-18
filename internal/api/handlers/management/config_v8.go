@@ -81,6 +81,7 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 			c.Data(http.StatusOK, "application/yaml; charset=utf-8", data)
 			return
 		}
+		secretboundary.RedactPluginConfigTree(c, root)
 		var result any
 		if err = value.Decode(&result); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "decode_failed"})

@@ -1,4 +1,4 @@
-package secretboundary
+package secretboundary_test
 
 import (
 	"go/ast"
@@ -12,10 +12,12 @@ import (
 	"testing"
 
 	"github.com/MoeForge/moego/regexp"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"gopkg.in/yaml.v3"
 )
 
 func TestSecretTagCoverage(t *testing.T) {
-	names := regexp.MustCompile("(?i)(key|token|secret|password|credential|cookie)$")
+	names := regexp.MustCompile("(?i)(key|token|secret|password|credential|cookie)s?$")
 	files := token.NewFileSet()
 	err := filepath.WalkDir("../..", func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -42,7 +44,7 @@ func TestSecretTagCoverage(t *testing.T) {
 				name, _, _ := strings.Cut(tag.Get(encoding), ",")
 				if names.MatchString(name) {
 					switch tag.Get("secret") {
-					case "value", "sensitive-header-values", "url-userinfo", "public":
+					case "value", "sensitive-header-values", "url-userinfo", "public", "walk", "plugin-config":
 					default:
 						t.Errorf("%s: %s needs a secret tag", files.Position(field.Pos()), name)
 					}
@@ -74,4 +76,57 @@ func secretFieldType(expr ast.Expr) bool {
 	default:
 		return false
 	}
+}
+
+func TestConfigSecretTagCoverage(t *testing.T) {
+	names := regexp.MustCompile("(?i)(key|token|secret|password|credential|cookie)s?$")
+	var walk func(reflect.Type, string)
+	seen := map[reflect.Type]bool{}
+	walk = func(typ reflect.Type, path string) {
+		for typ.Kind() == reflect.Pointer || typ.Kind() == reflect.Slice || typ.Kind() == reflect.Array || typ.Kind() == reflect.Map {
+			typ = typ.Elem()
+		}
+		if typ.Kind() != reflect.Struct || seen[typ] {
+			return
+		}
+		seen[typ] = true
+		for field := range typ.Fields() {
+			if !field.IsExported() {
+				continue
+			}
+			name := path + "." + field.Name
+			ft := field.Type
+			for ft.Kind() == reflect.Pointer || ft.Kind() == reflect.Slice || ft.Kind() == reflect.Array {
+				ft = ft.Elem()
+			}
+			tag := field.Tag.Get("secret")
+			dynamic := ft == reflect.TypeFor[yaml.Node]()
+			if ft.Kind() == reflect.Map {
+				elem := ft.Elem()
+				for elem.Kind() == reflect.Pointer || elem.Kind() == reflect.Slice || elem.Kind() == reflect.Array {
+					elem = elem.Elem()
+				}
+				dynamic = elem.Kind() == reflect.Struct || elem.Kind() == reflect.Interface || elem.Kind() == reflect.Map
+			}
+			if dynamic && tag == "" {
+				t.Errorf("%s needs a secret tag for dynamic config", name)
+			}
+			if ft.Kind() == reflect.String || ft == reflect.TypeFor[map[string]string]() {
+				for _, encoding := range []string{"yaml", "json"} {
+					fieldName, _, _ := strings.Cut(field.Tag.Get(encoding), ",")
+					if fieldName == "" {
+						fieldName = field.Name
+					}
+					if names.MatchString(fieldName) && tag == "" {
+						t.Errorf("%s needs a secret tag for %s name", name, encoding)
+						break
+					}
+				}
+			}
+			if tag != "public" && ft != reflect.TypeFor[yaml.Node]() {
+				walk(ft, name)
+			}
+		}
+	}
+	walk(reflect.TypeFor[config.Config](), "Config")
 }

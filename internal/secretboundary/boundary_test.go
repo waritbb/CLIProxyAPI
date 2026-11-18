@@ -29,7 +29,7 @@ func TestHandleStableAndShortMatching(t *testing.T) {
 			t.Fatal(err)
 		}
 		b.Rebuild(cfg, []map[string]any{{"token": "abc"}})
-		idx := b.current.Load()
+		idx := b.refresh()
 		handle := idx.redact(long)
 		if len(handle) != 38 || !ContainsHandle([]byte(handle)) || !strings.HasSuffix(handle, "_-key") {
 			t.Fatal("unexpected handle grammar")
@@ -61,7 +61,7 @@ func TestBoundaryCoversBeforeAndAfterSnapshots(t *testing.T) {
 	const old = "fixture-original-key"
 	const next = "fixture-new-key"
 	cfg := testCredential{old}
-	b, err := Open("", func() (any, []map[string]any) { return cfg, nil })
+	b, err := Open("", func() *Snapshot { return &Snapshot{Config: cfg} })
 	if err != nil {
 		t.Fatal(err)
 	}

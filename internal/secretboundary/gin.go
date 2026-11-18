@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
+	"gopkg.in/yaml.v3"
 	"io"
 	"maps"
 	"mime"
@@ -54,6 +55,10 @@ func (b *Boundary) wrap(next gin.HandlerFunc, resolve bool) gin.HandlerFunc {
 			return
 		}
 		before := b.refresh()
+		if before == nil {
+			failClosed(c)
+			return
+		}
 		if resolve && !resolveManagementRequest(c, before) {
 			return
 		}
@@ -62,6 +67,7 @@ func (b *Boundary) wrap(next gin.HandlerFunc, resolve bool) gin.HandlerFunc {
 		buffer := &capture{ResponseWriter: outer, header: outer.Header().Clone(), status: outer.Status()}
 		c.Writer = buffer
 		c.Set(protectedKey, true)
+		c.Set(pluginScalarKey, b.redactPluginScalars)
 		func() {
 			defer func() { c.Writer = outer }()
 			next(c)
@@ -72,43 +78,55 @@ func (b *Boundary) wrap(next gin.HandlerFunc, resolve bool) gin.HandlerFunc {
 			return
 		}
 		after := b.refresh()
-		values := make(candidates)
-		for _, idx := range []*index{before, after} {
-			for val, segment := range idx.values {
-				values.add(val, segment)
-			}
-		}
-		if raw, ok := c.Get(authFileKey); ok {
-			var metadata map[string]any
-			if err := json.Unmarshal(raw.([]byte), &metadata); err != nil || metadata == nil {
-				failClosed(c)
-				return
-			}
-			values.auth(metadata)
-		}
-		if cfg, ok := c.Get(configSourceKey); ok {
-			if cfg == nil {
-				failClosed(c)
-				return
-			}
-			values.addConfig(cfg)
+		if after == nil {
+			failClosed(c)
+			return
 		}
 		idx := after
-		if !maps.Equal(values, after.values) {
-			idx = b.build(values)
+		authFile, hasAuthFile := c.Get(authFileKey)
+		cfg, hasConfig := c.Get(configSourceKey)
+		if before != after || hasAuthFile || hasConfig {
+			values := maps.Clone(after.values)
+			if values == nil {
+				values = make(candidates)
+			}
+			if before != after {
+				for key, segment := range before.values {
+					values[key] = values[key] || segment
+				}
+			}
+			if hasAuthFile {
+				var metadata map[string]any
+				if err := json.Unmarshal(authFile.([]byte), &metadata); err != nil || metadata == nil {
+					failClosed(c)
+					return
+				}
+				values.auth(metadata)
+			}
+			if hasConfig && (cfg == nil || values.addConfig(cfg) != nil) {
+				failClosed(c)
+				return
+			}
+			if !maps.Equal(values, after.values) {
+				idx = b.build(values)
+			}
 		}
-		body, err := redactResponse(buffer, idx)
+		if entry, ok := c.Get(logDownloadKey); ok {
+			if buffer.body.Len() != 0 || !streamLog(outer, buffer.header, idx, entry.(logDownload)) {
+				failClosed(c)
+			}
+			return
+		}
+		var prepare func(*yaml.Node) bool
+		if strings.HasSuffix(c.FullPath(), "/config.yaml") {
+			prepare = func(root *yaml.Node) bool { return visitPluginConfigs(root, b.redactPluginScalars) }
+		}
+		body, err := redactResponse(buffer, idx, prepare)
 		if err != nil || len(body) > maxBody {
 			failClosed(c)
 			return
 		}
-		for key, values := range buffer.header {
-			safe := make([]string, len(values))
-			for i, value := range values {
-				safe[i] = idx.redact(value)
-			}
-			outer.Header()[key] = safe
-		}
+		redactHeaders(outer.Header(), buffer.header, idx)
 		outer.Header().Del("Content-Length")
 		outer.WriteHeader(buffer.status)
 		if buffer.body.Len() != 0 {
@@ -117,15 +135,27 @@ func (b *Boundary) wrap(next gin.HandlerFunc, resolve bool) gin.HandlerFunc {
 	}
 }
 
+func redactHeaders(dst, src http.Header, idx *index) {
+	for key, values := range src {
+		safe := make([]string, len(values))
+		for i, value := range values {
+			safe[i] = idx.redact(value)
+		}
+		dst[key] = safe
+	}
+}
+
 func resolveManagementRequest(c *gin.Context, idx *index) bool {
+	typed := idx.typed
 	convert := idx.resolve
 	switch c.FullPath() {
 	case "/v0/management/api-call", "/v8/management/requests/api-call":
 		// An arbitrary upstream relay must not accept a credential handle as
 		// input for forwarding. Existing auth-index requests are unchanged.
 		convert = rejectRelayHandle
+		typed = nil
 	}
-	err := resolveRequest(c.Request, convert)
+	err := resolveRequest(c.Request, convert, typed)
 	if err == nil {
 		return true
 	}
@@ -169,7 +199,7 @@ func rejectRelayHandle(value string) (string, error) {
 	return value, nil
 }
 
-func resolveRequest(req *http.Request, convert transform) error {
+func resolveRequest(req *http.Request, convert transform, typed map[string]yaml.Node) error {
 	if req.URL.RawQuery != "" {
 		values, err := url.ParseQuery(req.URL.RawQuery)
 		if err != nil {
@@ -210,9 +240,17 @@ func resolveRequest(req *http.Request, convert transform) error {
 	case strings.HasPrefix(media, "multipart/"):
 		err = rejectMultipartHandles(data, params["boundary"])
 	case yamlRoute || isYAML(media):
-		out, err = transformYAML(data, convert, true)
+		out, err = transformYAMLNodes(data, convert, true, nil, typed)
 	case json.Valid(data):
-		out, err = transformJSON(data, convert)
+		out, err = transformJSONScalars(data, convert, func(handle string) (any, bool, error) {
+			node, ok := typed[handle]
+			if !ok {
+				return nil, false, nil
+			}
+			var value any
+			err := node.Decode(&value)
+			return value, true, err
+		})
 	case ContainsHandle(data):
 		return errStaleHandle
 	}
@@ -249,7 +287,7 @@ func rejectMultipartHandles(data []byte, boundary string) error {
 	}
 }
 
-func redactResponse(buffer *capture, idx *index) ([]byte, error) {
+func redactResponse(buffer *capture, idx *index, prepare func(*yaml.Node) bool) ([]byte, error) {
 	data := buffer.body.Bytes()
 	if len(data) == 0 {
 		return data, nil
@@ -260,7 +298,7 @@ func redactResponse(buffer *capture, idx *index) ([]byte, error) {
 	case isJSON(media):
 		return transformJSON(data, convert)
 	case isYAML(media):
-		return transformYAML(data, convert, true)
+		return transformYAMLNodes(data, convert, true, prepare, nil)
 	case media == "text/plain" || media == "text/html":
 		return []byte(idx.redact(string(data))), nil
 	default:

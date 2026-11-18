@@ -12,9 +12,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MoeForge/moego/base64"
 	"github.com/MoeForge/moego/json"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/secretboundary"
 	sdkauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
@@ -317,5 +319,182 @@ func TestManagementSecretPersistenceRejectsHandles(t *testing.T) {
 	}
 	if _, err := config.ParseConfigBytes(bad); err == nil || !strings.Contains(err.Error(), "claude-api-key.[0].api-key") {
 		t.Fatal("load of a handle did not identify its field")
+	}
+}
+
+func TestManagementSecretPluginConfig(t *testing.T) {
+	s, _, configPath, _ := secretFixture(t)
+	const key = "fixture-plugin-sensitive-key"
+	f, err := os.OpenFile(configPath, os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.WriteString("plugins:\n  configs:\n    test-plugin:\n      enabled: true\n      priority: 42\n      nested: {tavily_api_keys: [" + key + "], pin: 76543210}\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, route := range []string{"/v0/management/config.yaml", "/v8/management/config.yaml", "/v8/management/config", "/v8/management/config/plugins/configs/test-plugin/nested"} {
+		got := secretRequest(s, "GET", route, "", nil)
+		body := got.Body.Bytes()
+		if got.Code != 200 || bytes.Contains(body, []byte(key)) || bytes.Contains(body, []byte("76543210")) || !secretboundary.ContainsHandle(body) {
+			t.Errorf("%s: config status %d or unprotected plugin settings", route, got.Code)
+		}
+		if strings.HasSuffix(route, ".yaml") {
+			for _, public := range []string{"enabled: true", "priority: 42"} {
+				if !bytes.Contains(body, []byte(public)) {
+					t.Errorf("%s: missing public plugin setting", route)
+				}
+			}
+		}
+	}
+	baseline, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	yaml := secretRequest(s, "GET", "/v8/management/config.yaml", "", nil)
+	saved := secretRequest(s, "PUT", "/v8/management/config.yaml", "application/yaml", yaml.Body.Bytes())
+	after, err := os.ReadFile(configPath)
+	if err != nil || saved.Code != 200 || !bytes.Equal(baseline, after) {
+		t.Fatalf("plugin YAML round trip changed bytes or returned %d", saved.Code)
+	}
+}
+
+func TestManagementSecretPanelAntigravityQuota(t *testing.T) {
+	s, manager, _, _ := secretFixture(t)
+	const project = "fixture-antigravity-project"
+	const token = "fixture-antigravity-access"
+	_, err := manager.Register(t.Context(), &coreauth.Auth{
+		ID: "antigravity-fixture.json", Provider: "antigravity",
+		Metadata: map[string]any{"type": "antigravity", "email": "fixture@example.invalid", "project_id": project, "access_token": token, "expired": "2099-01-01T00:00:00Z"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		if r.Method != "POST" || r.Header.Get("Authorization") != "Bearer "+token ||
+			r.Header.Get("User-Agent") != "antigravity/hub/fixture darwin/arm64" ||
+			json.NewDecoder(r.Body).Decode(&body) != nil || body["project"] != project {
+			w.WriteHeader(400)
+			return
+		}
+		w.WriteHeader(204)
+	}))
+	defer upstream.Close()
+	for _, route := range []struct{ list, relay string }{
+		{"/v0/management/auth-files", "/v0/management/api-call"},
+		{"/v8/management/credentials", "/v8/management/requests/api-call"},
+	} {
+		listing := secretRequest(s, "GET", route.list, "", nil)
+		var rows struct {
+			Files []struct {
+				ID        string `json:"id"`
+				Project   string `json:"project_id"`
+				AuthIndex string `json:"auth_index"`
+			} `json:"files"`
+		}
+		if listing.Code != 200 || json.Unmarshal(listing.Body.Bytes(), &rows) != nil {
+			t.Fatalf("%s: invalid auth listing (%d)", route.list, listing.Code)
+		}
+		found := false
+		for _, row := range rows.Files {
+			if row.ID != "antigravity-fixture.json" {
+				continue
+			}
+			found = true
+			data := fmt.Sprintf(`{"project":%q}`, row.Project)
+			body := fmt.Sprintf(`{"authIndex":%q,"method":"POST","url":%q,"header":{"Authorization":"Bearer $TOKEN$","Content-Type":"application/json","User-Agent":"antigravity/hub/fixture darwin/arm64"},"data":%q}`, row.AuthIndex, upstream.URL, data)
+			got := secretRequest(s, "POST", route.relay, "application/json", []byte(body))
+			var response struct {
+				StatusCode int `json:"status_code"`
+			}
+			if got.Code != 200 || json.Unmarshal(got.Body.Bytes(), &response) != nil || response.StatusCode != 204 {
+				t.Errorf("%s: relay HTTP %d, upstream HTTP %d", route.relay, got.Code, response.StatusCode)
+			}
+		}
+		if !found {
+			t.Fatal("Antigravity credential missing")
+		}
+	}
+}
+
+func TestManagementSecretPanelPlanType(t *testing.T) {
+	s, manager, _, _ := secretFixture(t)
+	item, _ := manager.GetByID("fixture.json")
+	item.Metadata["plan_type"] = "promax"
+	if _, err := manager.Update(t.Context(), item); err != nil {
+		t.Fatal(err)
+	}
+	const jwtClaims = `{"https://api.openai.com/auth":{"chatgpt_plan_type":"promax","chatgpt_account_id":"fixture-account-id"}}`
+	jwt := "eyJhbGciOiJub25lIn0." + base64.RawURLEncoding.EncodeToString([]byte(jwtClaims)) + ".fixture"
+	if _, err := manager.Register(t.Context(), &coreauth.Auth{
+		ID: "codex-plan-fixture.json", Provider: "codex",
+		Metadata: map[string]any{"type": "codex", "email": "fixture@example.invalid", "id_token": jwt},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, route := range []string{"/v0/management/auth-files", "/v8/management/credentials"} {
+		got := secretRequest(s, "GET", route, "", nil)
+		var listing struct {
+			Files []struct {
+				ID     string `json:"id"`
+				Claims struct {
+					Plan string `json:"plan_type"`
+				} `json:"id_token"`
+			} `json:"files"`
+		}
+		if got.Code != 200 || json.Unmarshal(got.Body.Bytes(), &listing) != nil || bytes.Contains(got.Body.Bytes(), []byte(jwt)) {
+			t.Fatalf("%s: invalid credential listing or raw ID token (%d)", route, got.Code)
+		}
+		found := false
+		for _, row := range listing.Files {
+			if row.ID == "codex-plan-fixture.json" {
+				found = row.Claims.Plan == "promax"
+			}
+		}
+		if !found {
+			t.Errorf("%s: plan badge claim did not remain plain", route)
+		}
+	}
+	for _, route := range []string{"/v0/management/auth-files/download", "/v8/management/credentials/download"} {
+		got := secretRequest(s, "GET", route+"?name=fixture.json", "", nil)
+		var fields map[string]any
+		if got.Code != 200 || json.Unmarshal(got.Body.Bytes(), &fields) != nil || fields["plan_type"] != "promax" {
+			t.Errorf("%s: plan_type did not remain plain (%d)", route, got.Code)
+		}
+	}
+}
+
+func TestManagementSecretLargeLogDownloads(t *testing.T) {
+	s, _, _, _ := secretFixture(t)
+	dir := t.TempDir()
+	s.mgmt.SetLogDirectory(dir)
+	const id = "secret-log-probe"
+	name := "error-fixture-" + logging.ShortRequestID(id) + ".log"
+	// The credential straddles the first 32 KiB read. The full file exceeds 32 MiB.
+	const chunk = 32 << 10
+	data := strings.Repeat("x", chunk-3) + secretFixtureKey + strings.Repeat("y", 32<<20)
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, route := range []struct{ path, media string }{
+		{"/v0/management/request-error-logs/" + name, "text/plain; charset=utf-8"},
+		{"/v8/management/observability/logs/requests/" + id, "application/octet-stream"},
+	} {
+		if route.media == "application/octet-stream" {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte("\x00"+data[1:]), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		got := secretRequest(s, "GET", route.path, "", nil)
+		body := got.Body.Bytes()
+		if got.Code != 200 || got.Header().Get("Content-Type") != route.media ||
+			!bytes.Equal(body[max(0, len(body)-(32<<20)):], []byte(data[len(data)-(32<<20):])) ||
+			bytes.Contains(body, []byte(secretFixtureKey)) || !secretboundary.ContainsHandle(body) {
+			t.Errorf("%s: large log failed or was not redacted (%d, %d bytes)", route.path, got.Code, len(body))
+		}
 	}
 }

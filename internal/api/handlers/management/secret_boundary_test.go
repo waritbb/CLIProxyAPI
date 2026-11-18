@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/secretboundary"
 )
 
@@ -29,5 +30,14 @@ func TestAuthWritersRejectSecretHandles(t *testing.T) {
 		if err != nil || string(saved) != original {
 			t.Fatal("rejected auth write modified the file")
 		}
+	}
+}
+
+func TestSecretSnapshotReusesUnchangedConfigAndAuths(t *testing.T) {
+	h := NewHandler(&config.Config{}, "", nil)
+	cfg1 := h.secretSnapshot()
+	cfg2 := h.secretSnapshot()
+	if cfg1 != cfg2 {
+		t.Fatal("unchanged snapshot allocated a new config walk input")
 	}
 }

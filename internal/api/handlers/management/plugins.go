@@ -3,6 +3,8 @@ package management
 import (
 	"errors"
 	"fmt"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/secretboundary"
 	"net/http"
 	"os"
 	"sort"
@@ -211,7 +213,10 @@ func (h *Handler) GetPluginConfig(c *gin.Context) {
 	h.mu.Unlock()
 
 	if configured {
-		body, errBody := pluginConfigJSONObject(item)
+		if secretboundary.Protected(c) {
+			secretboundary.IncludeConfig(c, item)
+		}
+		body, errBody := pluginConfigJSONObject(c, item)
 		if errBody != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "plugin_config_encode_failed", "message": errBody.Error()})
 			return
@@ -413,6 +418,7 @@ func (h *Handler) DeletePlugin(c *gin.Context) {
 
 	h.mu.Lock()
 	delete(h.cfg.Plugins.Configs, id)
+	h.secretSource = nil
 	if configured {
 		if errSave := config.SaveConfigPreserveComments(h.configFilePath, h.cfg, c.GetBool(ConfigV8ContextKey)); errSave != nil {
 			h.mu.Unlock()
@@ -596,8 +602,10 @@ func pluginConfigNode(item config.PluginInstanceConfig) *yaml.Node {
 	return node
 }
 
-func pluginConfigJSONObject(item config.PluginInstanceConfig) (map[string]any, error) {
-	value, errValue := yamlNodeToJSONValue(pluginConfigNode(item))
+func pluginConfigJSONObject(c *gin.Context, item config.PluginInstanceConfig) (map[string]any, error) {
+	node := pluginConfigNode(item)
+	secretboundary.RedactPluginScalars(c, node)
+	value, errValue := yamlNodeToJSONValue(node)
 	if errValue != nil {
 		return nil, errValue
 	}

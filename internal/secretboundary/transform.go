@@ -16,6 +16,10 @@ type transform func(string) (string, error)
 var errDuplicateKey = errors.New("duplicate key after secret translation")
 
 func transformJSON(data []byte, convert transform) ([]byte, error) {
+	return transformJSONScalars(data, convert, nil)
+}
+
+func transformJSONScalars(data []byte, convert transform, resolveScalar func(string) (any, bool, error)) ([]byte, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
 	var input any
@@ -25,7 +29,7 @@ func transformJSON(data []byte, convert transform) ([]byte, error) {
 	if err := dec.Decode(new(any)); err != io.EOF {
 		return nil, errors.New("invalid JSON document")
 	}
-	output, changed, err := walkJSON(input, convert)
+	output, changed, err := walkJSON(input, convert, resolveScalar)
 	if err != nil {
 		return nil, err
 	}
@@ -35,15 +39,20 @@ func transformJSON(data []byte, convert transform) ([]byte, error) {
 	return json.Marshal(output)
 }
 
-func walkJSON(input any, convert transform) (any, bool, error) {
+func walkJSON(input any, convert transform, resolveScalar func(string) (any, bool, error)) (any, bool, error) {
 	switch value := input.(type) {
 	case string:
 		out, err := convert(value)
+		if err == nil && out != value && resolveScalar != nil {
+			if resolved, ok, err := resolveScalar(value); ok || err != nil {
+				return resolved, true, err
+			}
+		}
 		return out, out != value, err
 	case []any:
 		changed := false
 		for i, item := range value {
-			next, modified, err := walkJSON(item, convert)
+			next, modified, err := walkJSON(item, convert, resolveScalar)
 			if err != nil {
 				return nil, false, err
 			}
@@ -62,7 +71,7 @@ func walkJSON(input any, convert transform) (any, bool, error) {
 			if _, exists := out[name]; exists {
 				return nil, false, errDuplicateKey
 			}
-			next, modified, err := walkJSON(item, convert)
+			next, modified, err := walkJSON(item, convert, resolveScalar)
 			if err != nil {
 				return nil, false, err
 			}
@@ -75,7 +84,7 @@ func walkJSON(input any, convert transform) (any, bool, error) {
 	}
 }
 
-func transformYAML(data []byte, convert transform, comments bool) ([]byte, error) {
+func transformYAMLNodes(data []byte, convert transform, comments bool, prepare func(*yaml.Node) bool, typed map[string]yaml.Node) ([]byte, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	var docs []*yaml.Node
 	changed := false
@@ -88,7 +97,10 @@ func transformYAML(data []byte, convert transform, comments bool) ([]byte, error
 		if err != nil {
 			return nil, err
 		}
-		if err := walkYAML(doc, convert, comments, &changed); err != nil {
+		if prepare != nil {
+			changed = prepare(doc) || changed
+		}
+		if err := walkYAML(doc, convert, comments, &changed, typed); err != nil {
 			return nil, err
 		}
 		docs = append(docs, doc)
@@ -107,13 +119,16 @@ func transformYAML(data []byte, convert transform, comments bool) ([]byte, error
 	return output.Bytes(), enc.Close()
 }
 
-func walkYAML(node *yaml.Node, convert transform, comments bool, changed *bool) error {
+func walkYAML(node *yaml.Node, convert transform, comments bool, changed *bool, typed map[string]yaml.Node) error {
 	if node.Kind == yaml.ScalarNode && node.ShortTag() == "!!str" {
 		out, err := convert(node.Value)
 		if err != nil {
 			return err
 		}
 		*changed = *changed || out != node.Value
+		if resolved, ok := typed[node.Value]; ok && out != node.Value {
+			node.Tag = resolved.Tag
+		}
 		node.Value = out
 	}
 	if comments {
@@ -127,7 +142,7 @@ func walkYAML(node *yaml.Node, convert transform, comments bool, changed *bool) 
 		}
 	}
 	for _, child := range node.Content {
-		if err := walkYAML(child, convert, comments, changed); err != nil {
+		if err := walkYAML(child, convert, comments, changed, typed); err != nil {
 			return err
 		}
 	}

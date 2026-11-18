@@ -18,7 +18,7 @@ type AccessProvider struct {
 	SDK string `yaml:"sdk,omitempty" json:"sdk,omitempty"`
 
 	// APIKeys lists inline keys for providers that require them.
-	APIKeys []string `yaml:"api-keys,omitempty" json:"api-keys,omitempty"`
+	APIKeys []string `yaml:"api-keys,omitempty" json:"api-keys,omitempty" secret:"public"`
 
 	// Config passes provider-specific options to the implementation.
 	Config map[string]any `yaml:"config,omitempty" json:"config,omitempty"`

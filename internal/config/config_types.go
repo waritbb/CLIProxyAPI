@@ -38,7 +38,7 @@ type PluginsConfig struct {
 	// AuthRevision changes when Home-managed plugin credentials change.
 	AuthRevision int64 `yaml:"auth-revision,omitempty" json:"auth-revision,omitempty"`
 	// Configs stores per-plugin instance configuration by plugin ID.
-	Configs map[string]PluginInstanceConfig `yaml:"configs" json:"configs"`
+	Configs map[string]PluginInstanceConfig `yaml:"configs" json:"configs" secret:"walk"`
 }
 
 // PluginInstanceConfig stores host-owned plugin settings and the original plugin YAML subtree.
@@ -48,7 +48,7 @@ type PluginInstanceConfig struct {
 	// Priority controls plugin startup and routing order.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
 	// Raw preserves the full original plugin configuration YAML subtree.
-	Raw yaml.Node `yaml:"-" json:"-"`
+	Raw yaml.Node `yaml:"-" json:"-" secret:"plugin-config"`
 }
 
 // UnmarshalYAML extracts host-owned fields while preserving the full original YAML node.
@@ -694,7 +694,7 @@ type PayloadFilterRule struct {
 	// Models lists model entries with name pattern and protocol constraint.
 	Models []PayloadModelRule `yaml:"models" json:"models"`
 	// Params lists JSON paths (gjson/sjson syntax) to remove from the payload.
-	Params []string `yaml:"params" json:"params"`
+	Params []string `yaml:"params" json:"params" secret:"public"`
 }
 
 // PayloadRule describes a single rule targeting a list of models with parameter updates.
@@ -703,7 +703,7 @@ type PayloadRule struct {
 	Models []PayloadModelRule `yaml:"models" json:"models"`
 	// Params maps JSON paths (gjson/sjson syntax) to values written into the payload.
 	// For *-raw rules, values are treated as raw JSON fragments (strings are used as-is).
-	Params map[string]any `yaml:"params" json:"params"`
+	Params map[string]any `yaml:"params" json:"params" secret:"public"`
 }
 
 // PayloadModelRule ties a model name pattern to a specific translator protocol.
@@ -717,9 +717,9 @@ type PayloadModelRule struct {
 	// FromProtocol restricts the rule to a specific source protocol (e.g., "gemini", "responses").
 	FromProtocol string `yaml:"from-protocol" json:"from-protocol"`
 	// Match requires payload JSON paths to equal the configured values.
-	Match []map[string]any `yaml:"match" json:"match"`
+	Match []map[string]any `yaml:"match" json:"match" secret:"public"`
 	// NotMatch requires payload JSON paths to not equal the configured values.
-	NotMatch []map[string]any `yaml:"not-match" json:"not-match"`
+	NotMatch []map[string]any `yaml:"not-match" json:"not-match" secret:"public"`
 	// Exist requires payload JSON paths to exist and not be null.
 	Exist []string `yaml:"exist" json:"exist"`
 	// NotExist requires payload JSON paths to be missing or null.

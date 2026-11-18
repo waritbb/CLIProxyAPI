@@ -201,6 +201,7 @@ type Manager struct {
 	// to reject cooldown clears from executions dispatched before the cooldown.
 	executionSeq       atomic.Uint64
 	structuralEpoch    atomic.Uint64
+	authGeneration     atomic.Uint64
 	syncedVersion      atomic.Uint64
 	auths              map[string]*Auth
 	authEpochs         map[string]uint64

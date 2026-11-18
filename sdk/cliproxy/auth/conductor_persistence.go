@@ -412,6 +412,7 @@ func (m *Manager) PersistMetadataEntry(ctx context.Context, id string, expectedE
 			invalidated := current.Clone()
 			delete(invalidated.Metadata, key)
 			m.auths[id] = invalidated
+			m.authGeneration.Add(1)
 		}
 		m.mu.Unlock()
 		return false, false
@@ -421,6 +422,7 @@ func (m *Manager) PersistMetadataEntry(ctx context.Context, id string, expectedE
 		updated.Generation = current.Generation
 	}
 	m.auths[id] = updated.Clone()
+	m.authGeneration.Add(1)
 	m.mu.Unlock()
 	return true, false
 }

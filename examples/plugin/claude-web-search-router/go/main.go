@@ -107,7 +107,7 @@ type pluginConfig struct {
 	XAIModel             string   `yaml:"xai_model"`
 	DefaultProvider      string   `yaml:"default_provider"`
 	DefaultProviderModel string   `yaml:"default_provider_model"`
-	TavilyAPIKeys        []string `yaml:"tavily_api_keys"`
+	TavilyAPIKeys        []string `yaml:"tavily_api_keys" secret:"value"`
 	RequireWebSearchOnly bool     `yaml:"require_web_search_only"`
 }
 

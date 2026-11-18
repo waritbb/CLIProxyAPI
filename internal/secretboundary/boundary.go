@@ -15,7 +15,9 @@ import (
 	"reflect"
 	"sort"
 	"strings"
-	"sync/atomic"
+	"sync"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/MoeForge/moego/regexp"
 )
@@ -30,24 +32,31 @@ var errStaleHandle = errors.New("stale secret handle; reload")
 func ContainsHandle(data []byte) bool { return handlePattern.Match(data) }
 
 // Snapshot supplies the config and the auth manager's current credential metadata.
-type Snapshot func() (cfg any, auths []map[string]any)
+type Snapshot struct {
+	Config any
+	Auths  []map[string]any
+}
 
 type Boundary struct {
 	key      []byte
-	snapshot Snapshot
-	current  atomic.Pointer[index]
+	snapshot func() *Snapshot
+	mu       sync.Mutex
+	previous *Snapshot
+	current  *index
 }
 
-func Open(stateDir string, snapshot Snapshot) (*Boundary, error) {
+func Open(stateDir string, snapshot func() *Snapshot) (*Boundary, error) {
 	key, err := openKey(stateDir)
 	if err != nil {
 		return nil, err
 	}
 	b := &Boundary{key: key, snapshot: snapshot}
 	if snapshot != nil {
-		b.Rebuild(snapshot())
+		if b.refresh() == nil {
+			return nil, errors.New("invalid management secret snapshot")
+		}
 	} else {
-		b.Rebuild(nil, nil)
+		b.current = b.build(nil)
 	}
 	return b, nil
 }
@@ -94,11 +103,16 @@ func openKey(dir string) ([]byte, error) {
 }
 
 func (b *Boundary) handle(secret string) string {
+	return b.makeHandle(secret, "")
+}
+
+func (b *Boundary) makeHandle(secret, domain string) string {
 	mac := hmac.New(sha256.New, b.key)
+	_, _ = mac.Write([]byte(domain))
 	_, _ = mac.Write([]byte(secret))
 	suffix := []byte("____")
 	// Never expose a complete short credential through its display suffix.
-	if len(secret) > len(suffix) {
+	if domain == "" && len(secret) > len(suffix) {
 		for i, ch := range []byte(secret[len(secret)-len(suffix):]) {
 			if ch >= '0' && ch <= '9' || ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || strings.ContainsRune("-._~", rune(ch)) {
 				suffix[i] = ch
@@ -108,25 +122,39 @@ func (b *Boundary) handle(secret string) string {
 	return handlePrefix + base32.StdEncoding.EncodeToString(mac.Sum(nil))[:26] + "_" + string(suffix)
 }
 
-type candidates map[string]bool // true permits short pipe-delimited segments
+type candidate struct {
+	value   string
+	yamlTag string
+}
+
+type candidates map[candidate]bool // true permits short pipe-delimited segments
 
 func (c candidates) add(value string, segment bool) {
 	if value != "" {
-		c[value] = c[value] || segment
+		key := candidate{value: value}
+		c[key] = c[key] || segment
 	}
 }
 
 type index struct {
-	values   candidates
-	byHandle map[string]string
-	byValue  map[string]string
-	long     *strings.Replacer
+	values       candidates
+	byHandle     map[string]string
+	byValue      map[string]string
+	long         *strings.Replacer
+	typed        map[string]yaml.Node
+	logSecrets   [256][]string
+	maxLogSecret int
 }
 
 func (b *Boundary) build(values candidates) *index {
-	idx := &index{values: values, byHandle: make(map[string]string), byValue: make(map[string]string)}
+	idx := &index{values: values, byHandle: make(map[string]string), byValue: make(map[string]string), typed: make(map[string]yaml.Node)}
 	long := make([]string, 0, len(values))
-	for val := range values {
+	for key := range values {
+		val := key.value
+		if key.yamlTag != "" {
+			idx.typed[b.scalarHandle(key)] = yaml.Node{Kind: yaml.ScalarNode, Tag: key.yamlTag, Value: val}
+			continue
+		}
 		handle := b.handle(val)
 		idx.byHandle[handle] = val
 		idx.byValue[val] = handle
@@ -138,36 +166,50 @@ func (b *Boundary) build(values candidates) *index {
 	pairs := make([]string, 0, 2*len(long))
 	for _, val := range long {
 		pairs = append(pairs, val, idx.byValue[val])
+		idx.logSecrets[val[0]] = append(idx.logSecrets[val[0]], val)
+		idx.maxLogSecret = max(idx.maxLogSecret, len(val))
 	}
 	idx.long = strings.NewReplacer(pairs...)
 	return idx
 }
 
-func (b *Boundary) Rebuild(cfg any, auths []map[string]any) {
+func (b *Boundary) setSnapshot(cfg any, auths []map[string]any) error {
 	values := make(candidates)
-	values.addConfig(cfg)
+	if err := values.addConfig(cfg); err != nil {
+		b.current = nil
+		return err
+	}
 	for _, auth := range auths {
 		values.auth(auth)
 	}
-	b.current.Store(b.build(values))
+	if b.current == nil || !maps.Equal(b.current.values, values) {
+		b.current = b.build(values)
+	}
+	return nil
+}
+
+func (b *Boundary) Rebuild(cfg any, auths []map[string]any) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.previous = nil
+	return b.setSnapshot(cfg, auths)
 }
 
 func (b *Boundary) refresh() *index {
-	if b.snapshot == nil {
-		return b.current.Load()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.snapshot != nil {
+		source := b.snapshot()
+		if source == nil {
+			b.previous, b.current = nil, nil
+			return nil
+		}
+		if source != b.previous {
+			_ = b.setSnapshot(source.Config, source.Auths)
+			b.previous = source
+		}
 	}
-	cfg, auths := b.snapshot()
-	values := make(candidates)
-	values.addConfig(cfg)
-	for _, auth := range auths {
-		values.auth(auth)
-	}
-	if existing := b.current.Load(); existing != nil && maps.Equal(existing.values, values) {
-		return existing
-	}
-	idx := b.build(values)
-	b.current.Store(idx)
-	return idx
+	return b.current
 }
 
 func (idx *index) redact(value string) string {
@@ -182,7 +224,7 @@ func (idx *index) redact(value string) string {
 	}
 	parts := strings.Split(long, "|")
 	for i, part := range parts {
-		if len(part) < 8 && idx.values[part] {
+		if len(part) < 8 && idx.values[candidate{value: part}] {
 			parts[i] = idx.byValue[part]
 		} else {
 			parts[i] = idx.redactURL(part)
@@ -214,6 +256,9 @@ func userinfoBounds(value string) (end, start int, ok bool) {
 }
 
 func (idx *index) resolve(value string) (string, error) {
+	if node, ok := idx.typed[value]; ok {
+		return node.Value, nil
+	}
 	var err error
 	out := handlePattern.ReplaceAllStringFunc(value, func(match string) string {
 		if resolved, ok := idx.byHandle[match]; ok {
@@ -225,38 +270,72 @@ func (idx *index) resolve(value string) (string, error) {
 	return out, err
 }
 
-func (c candidates) addConfig(cfg any) { c.config(reflect.ValueOf(cfg), "") }
+func (c candidates) addConfig(cfg any) error { return c.config(reflect.ValueOf(cfg), "") }
 
-func (c candidates) config(v reflect.Value, tag string) {
+func (c candidates) config(v reflect.Value, tag string) error {
 	if tag == "public" || !v.IsValid() {
-		return
+		return nil
 	}
 	switch v.Kind() {
 	case reflect.Pointer, reflect.Interface:
-		c.config(v.Elem(), tag)
+		return c.config(v.Elem(), tag)
 	case reflect.Struct:
+		if v.Type() == reflect.TypeFor[yaml.Node]() {
+			if tag != "plugin-config" {
+				return errors.New("unclassified YAML config node")
+			}
+			node := v.Interface().(yaml.Node)
+			visitPluginScalars(&node, func(child *yaml.Node) {
+				if child.ShortTag() == "!!str" {
+					c.add(child.Value, false)
+				} else {
+					c[candidate{value: child.Value, yamlTag: child.ShortTag()}] = false
+				}
+			})
+			return nil
+		}
 		for i := range v.NumField() {
 			field := v.Type().Field(i)
-			if field.IsExported() && (field.Tag.Get("yaml") != "-" || field.Tag.Get("json") != "-") {
-				c.config(v.Field(i), field.Tag.Get("secret"))
+			if !field.IsExported() {
+				continue
+			}
+			mode := field.Tag.Get("secret")
+			if mode == "" && field.Tag.Get("yaml") == "-" && field.Tag.Get("json") == "-" {
+				if field.Type != reflect.TypeFor[yaml.Node]() {
+					continue
+				}
+			}
+			if err := c.config(v.Field(i), mode); err != nil {
+				return fmt.Errorf("%s: %w", field.Name, err)
 			}
 		}
 	case reflect.Slice, reflect.Array:
 		for i := range v.Len() {
-			c.config(v.Index(i), tag)
+			if err := c.config(v.Index(i), tag); err != nil {
+				return err
+			}
 		}
 	case reflect.Map:
 		if tag == "" {
-			return
+			elem := v.Type().Elem()
+			for elem.Kind() == reflect.Pointer || elem.Kind() == reflect.Slice || elem.Kind() == reflect.Array {
+				elem = elem.Elem()
+			}
+			switch elem.Kind() {
+			case reflect.Struct, reflect.Interface, reflect.Map:
+				return errors.New("unclassified dynamic config map")
+			}
+			return nil
 		}
 		iter := v.MapRange()
 		for iter.Next() {
-			mode := tag
-			if mode == "sensitive-header-values" {
+			if tag == "sensitive-header-values" {
 				c.header(iter.Key().String(), iter.Value().String(), true)
 				continue
 			}
-			c.config(iter.Value(), mode)
+			if err := c.config(iter.Value(), tag); err != nil {
+				return err
+			}
 		}
 	case reflect.String:
 		switch tag {
@@ -266,6 +345,7 @@ func (c candidates) config(v reflect.Value, tag string) {
 			c.url(v.String())
 		}
 	}
+	return nil
 }
 
 func (c candidates) url(value string) {
@@ -303,12 +383,22 @@ var publicAuthFields = map[string]bool{
 	"weight": true, "exclude_models": true, "excluded_models": true, "excluded-models": true,
 	"disable_cooling": true, "disable-cooling": true, "websockets": true,
 	"use_siwc": true, "use-siwc": true, "using_api": true, "using-api": true,
+	"project_id": true, "projectId": true, "gemini_virtual_project": true,
+	"plan_type": true, "planType": true,
+	"account_id": true, "accountId": true, "chatgpt_account_id": true, "chatgptAccountId": true,
+	"oauth_provider": true, "oauthProvider": true, "portal": true,
+	"last_refresh": true, "modtime": true, "updated_at": true,
+	"quota_provider": true, "quotaProvider": true, "quota_plugin_id": true, "quotaPluginId": true,
+	"siwc_expires_at":                   true,
+	"chatgpt_subscription_active_until": true, "chatgptSubscriptionActiveUntil": true,
+	"subscription_active_until": true, "subscriptionActiveUntil": true,
+	"domain": true, "sub": true, "subject": true, "user_id": true, "userId": true,
 }
 
 func (c candidates) auth(auth map[string]any) {
 	for key, val := range auth {
 		switch key {
-		case "proxy_url":
+		case "proxy_url", "base_url", "base-url":
 			if s, ok := val.(string); ok {
 				c.url(s)
 				continue
@@ -331,9 +421,16 @@ func (c candidates) auth(auth map[string]any) {
 				continue
 			}
 		}
-		if !publicAuthFields[key] {
-			c.leaves(val)
+		if publicAuthFields[key] {
+			switch val.(type) {
+			case string, bool, float64, int, int64, nil:
+				continue
+			}
+			if key == "exclude_models" || key == "excluded_models" || key == "excluded-models" {
+				continue
+			}
 		}
+		c.leaves(val)
 	}
 }
 

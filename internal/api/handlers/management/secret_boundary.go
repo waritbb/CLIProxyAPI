@@ -3,6 +3,9 @@ package management
 import (
 	"os"
 	"path/filepath"
+	"time"
+
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -34,12 +37,42 @@ func (h *Handler) ManagementSecretBoundary() *secretboundary.Boundary {
 	return h.secretBoundary
 }
 
-func (h *Handler) secretSnapshot() (any, []map[string]any) {
+type secretSourceVersion struct {
+	modified       time.Time
+	size           int64
+	config         *config.Config
+	manager        *coreauth.Manager
+	authGeneration uint64
+}
+
+func (h *Handler) secretSnapshot() *secretboundary.Snapshot {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	version := secretSourceVersion{config: h.cfg, manager: h.authManager}
+	if h.authManager != nil {
+		version.authGeneration = h.authManager.AuthGeneration()
+	}
+	cacheable := true
+	if h.configFilePath != "" {
+		if info, err := os.Stat(h.configFilePath); err == nil {
+			version.modified, version.size = info.ModTime(), info.Size()
+		} else {
+			cacheable = false
+		}
+	}
+	if cacheable && h.secretSource != nil && h.secretSourceVersion == version {
+		return h.secretSource
+	}
 	var disk config.Config
-	if raw, err := os.ReadFile(h.configFilePath); err == nil {
-		_ = yaml.Unmarshal(raw, &disk)
+	if h.configFilePath != "" {
+		raw, err := os.ReadFile(h.configFilePath)
+		if err == nil {
+			if err := yaml.Unmarshal(raw, &disk); err != nil {
+				return nil
+			}
+		} else if !os.IsNotExist(err) {
+			return nil
+		}
 	}
 	var auths []map[string]any
 	var liveKeys struct {
@@ -55,7 +88,11 @@ func (h *Handler) secretSnapshot() (any, []map[string]any) {
 			}
 		}
 	}
-	return []any{h.cfg.CloneForRuntime(), &disk, liveKeys}, auths
+	source := &secretboundary.Snapshot{Config: []any{h.cfg.CloneForRuntime(), &disk, liveKeys}, Auths: auths}
+	if cacheable {
+		h.secretSource, h.secretSourceVersion = source, version
+	}
+	return source
 }
 
 func includeConfigSource(c *gin.Context, raw []byte) {
