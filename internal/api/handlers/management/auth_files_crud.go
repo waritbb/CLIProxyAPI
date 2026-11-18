@@ -23,6 +23,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/goplan"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/secretboundary"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/synthesizer"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -51,6 +52,7 @@ func (h *Handler) DownloadAuthFile(c *gin.Context) {
 		return
 	}
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", name))
+	secretboundary.IncludeAuthFile(c, data)
 	c.Data(200, "application/json", data)
 }
 
@@ -372,6 +374,9 @@ func (h *Handler) writeAuthFileBytesV8(dst string, data []byte, lockCodex bool) 
 }
 
 func writeV8AuthFilePayload(dst string, data []byte) error {
+	if err := secretboundary.ValidateAuthFile(data); err != nil {
+		return err
+	}
 	if info, errLstat := os.Lstat(dst); errLstat == nil && info.Mode()&os.ModeSymlink != 0 {
 		return os.WriteFile(dst, data, 0o600)
 	}
@@ -444,6 +449,9 @@ func (h *Handler) shouldLockCodexAuthFileV8(dst string, metadata map[string]any,
 }
 
 func (h *Handler) writeAuthFileBytes(dst string, data []byte, auth *coreauth.Auth) error {
+	if err := secretboundary.ValidateAuthFile(data); err != nil {
+		return err
+	}
 	if h.shouldLockCodexAuthFile(auth) {
 		return codex.WithFileLock(dst, func() error {
 			return os.WriteFile(dst, data, 0o600)

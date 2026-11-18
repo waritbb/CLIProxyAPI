@@ -294,9 +294,9 @@ func (a *XAIAuth) exchangeDeviceCode(ctx context.Context, tokenEndpoint, deviceC
 	var payload struct {
 		Error            string `json:"error"`
 		ErrorDescription string `json:"error_description"`
-		AccessToken      string `json:"access_token"`
-		RefreshToken     string `json:"refresh_token"`
-		IDToken          string `json:"id_token"`
+		AccessToken      string `json:"access_token" secret:"value"`
+		RefreshToken     string `json:"refresh_token" secret:"value"`
+		IDToken          string `json:"id_token" secret:"value"`
 		TokenType        string `json:"token_type"`
 		ExpiresIn        int    `json:"expires_in"`
 	}
@@ -406,9 +406,9 @@ func (a *XAIAuth) postTokenForm(ctx context.Context, tokenEndpoint string, form 
 		return nil, fmt.Errorf("xai token request failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	var payload struct {
-		AccessToken  string `json:"access_token"`
-		RefreshToken string `json:"refresh_token"`
-		IDToken      string `json:"id_token"`
+		AccessToken  string `json:"access_token" secret:"value"`
+		RefreshToken string `json:"refresh_token" secret:"value"`
+		IDToken      string `json:"id_token" secret:"value"`
 		TokenType    string `json:"token_type"`
 		ExpiresIn    int    `json:"expires_in"`
 	}

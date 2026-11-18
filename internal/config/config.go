@@ -26,7 +26,7 @@ type Config struct {
 	Port int `yaml:"port" json:"-"`
 
 	// GitHubToken is the global token for GitHub requests, taking precedence over GITHUB_TOKEN.
-	GitHubToken string `yaml:"github-token" json:"-"`
+	GitHubToken string `yaml:"github-token" json:"-" secret:"value"`
 
 	// TrustedProxies lists the IPs or CIDRs allowed to provide forwarded client IP headers.
 	// The server applies this list at startup; changing it requires a restart.

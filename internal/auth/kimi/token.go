@@ -17,9 +17,9 @@ import (
 // KimiTokenStorage stores OAuth2 token information for Kimi API authentication.
 type KimiTokenStorage struct {
 	// AccessToken is the OAuth2 access token used for authenticating API requests.
-	AccessToken string `json:"access_token"`
+	AccessToken string `json:"access_token" secret:"value"`
 	// RefreshToken is the OAuth2 refresh token used to obtain new access tokens.
-	RefreshToken string `json:"refresh_token"`
+	RefreshToken string `json:"refresh_token" secret:"value"`
 	// TokenType is the type of token, typically "Bearer".
 	TokenType string `json:"token_type"`
 	// Scope is the OAuth2 scope granted to the token.
@@ -48,9 +48,9 @@ func (ts *KimiTokenStorage) SetMetadata(meta map[string]any) {
 // KimiTokenData holds the raw OAuth token response from Kimi.
 type KimiTokenData struct {
 	// AccessToken is the OAuth2 access token.
-	AccessToken string `json:"access_token"`
+	AccessToken string `json:"access_token" secret:"value"`
 	// RefreshToken is the OAuth2 refresh token.
-	RefreshToken string `json:"refresh_token"`
+	RefreshToken string `json:"refresh_token" secret:"value"`
 	// TokenType is the type of token, typically "Bearer".
 	TokenType string `json:"token_type"`
 	// ExpiresAt is the Unix timestamp when the token expires.

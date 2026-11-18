@@ -218,7 +218,7 @@ type queuedUsageDetail struct {
 	Alias                 string                      `json:"alias"`
 	Endpoint              string                      `json:"endpoint"`
 	AuthType              string                      `json:"auth_type"`
-	APIKey                string                      `json:"api_key"`
+	APIKey                string                      `json:"api_key" secret:"value"`
 	IsNativeKey           bool                        `json:"is_native_key"`
 	AccessProvider        string                      `json:"access_provider,omitempty"`
 	RequestID             string                      `json:"request_id"`

@@ -15,7 +15,7 @@ import (
 type VertexCompatKey struct {
 	// APIKey is the authentication key for accessing the Vertex-compatible API.
 	// Maps to the x-goog-api-key header.
-	APIKey string `yaml:"api-key" json:"api-key"`
+	APIKey string `yaml:"api-key" json:"api-key" secret:"value"`
 
 	// Priority controls selection preference when multiple credentials match.
 	// Higher values are preferred; defaults to 0.
@@ -34,10 +34,10 @@ type VertexCompatKey struct {
 	// and the executor only appends "/{model}:{action}". Otherwise "/v1" is
 	// inserted if absent, then "/publishers/google/models" is appended; a
 	// trailing version segment like "/v1" or "/v1beta1" is never duplicated.
-	BaseURL string `yaml:"base-url,omitempty" json:"base-url,omitempty"`
+	BaseURL string `yaml:"base-url,omitempty" json:"base-url,omitempty" secret:"url-userinfo"`
 
 	// ProxyURL optionally overrides the global proxy for this API key.
-	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty" secret:"url-userinfo"`
 
 	// ConnectionPool configures upstream connection reuse for this credential.
 	// Omitted disables pooling (preserving the fresh-transport-per-request default);
@@ -46,7 +46,7 @@ type VertexCompatKey struct {
 
 	// Headers optionally adds extra HTTP headers for requests sent with this key.
 	// Commonly used for cookies, user-agent, and other authentication headers.
-	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty" secret:"sensitive-header-values"`
 
 	// Models defines the model configurations including aliases for routing.
 	Models []VertexCompatModel `yaml:"models,omitempty" json:"models,omitempty"`

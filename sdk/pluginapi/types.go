@@ -1942,7 +1942,7 @@ func (b *QuotaBucket) UnmarshalJSON(data []byte) error {
 // QuotaMetric is a provider-defined, bounded numeric account summary for management UI rendering.
 // Format is "number" or "currency"; Currency is an ISO 4217 code when Format is "currency".
 type QuotaMetric struct {
-	Key      string  `json:"key"`
+	Key      string  `json:"key" secret:"public"`
 	Label    string  `json:"label"`
 	Value    float64 `json:"value"`
 	Unit     string  `json:"unit,omitempty"`

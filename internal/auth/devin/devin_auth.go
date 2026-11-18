@@ -33,8 +33,8 @@ const (
 
 // DevinTokenBundle holds the completed authentication result.
 type DevinTokenBundle struct {
-	SessionToken string `json:"session_token"`
-	RawToken     string `json:"raw_token"`
+	SessionToken string `json:"session_token" secret:"value"`
+	RawToken     string `json:"raw_token" secret:"value"`
 	UserName     string `json:"user_name,omitempty"`
 	UserID       string `json:"user_id,omitempty"`
 	OrgID        string `json:"org_id,omitempty"`

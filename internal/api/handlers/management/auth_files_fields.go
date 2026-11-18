@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/secretboundary"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -238,6 +239,9 @@ func setSourceAuthFileDisabled(path string, disabled bool) error {
 	raw, errMarshal := json.Marshal(metadata)
 	if errMarshal != nil {
 		return fmt.Errorf("marshal auth file: %w", errMarshal)
+	}
+	if err := secretboundary.ValidateAuthFile(raw); err != nil {
+		return err
 	}
 	if errWrite := os.WriteFile(path, raw, 0o600); errWrite != nil {
 		return errWrite

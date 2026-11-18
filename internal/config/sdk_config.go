@@ -40,7 +40,7 @@ type SDKConfig struct {
 	CodexResponseSteering bool `yaml:"-" json:"-"`
 
 	// ProxyURL is the URL of an optional proxy server to use for outbound requests.
-	ProxyURL string `yaml:"proxy-url" json:"proxy-url"`
+	ProxyURL string `yaml:"proxy-url" json:"proxy-url" secret:"url-userinfo"`
 
 	// TLSHandshakeTimeoutSeconds bounds upstream TLS handshakes made by the
 	// shared uTLS client, in seconds. It applies to both the Claude Code
@@ -97,7 +97,7 @@ type SDKConfig struct {
 	ClaudeCode ClaudeCodeConfig `yaml:"claude-code" json:"claude-code"`
 
 	// APIKeys is a list of keys for authenticating clients to this proxy server.
-	APIKeys []string `yaml:"api-keys" json:"api-keys"`
+	APIKeys []string `yaml:"api-keys" json:"api-keys" secret:"public"`
 
 	// PassthroughHeaders controls whether upstream response headers are forwarded to downstream clients.
 	// Default is false (disabled).

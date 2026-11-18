@@ -22,11 +22,10 @@ func (s *Server) registerManagementRoutes() {
 	log.Info("management routes registered after secret key configuration")
 
 	s.registerManagementV8Routes()
-	s.engine.POST("/v0/management/oauth-callback", s.managementAvailabilityMiddleware(), s.mgmt.PostOAuthCallback)
-	s.engine.GET("/v0/management/oauth-callback", s.managementAvailabilityMiddleware(), s.mgmt.GetOAuthCallback)
+	s.engine.POST("/v0/management/oauth-callback", s.managementAvailabilityMiddleware(), s.mgmt.ManagementSecretBoundary().Callback(), s.mgmt.PostOAuthCallback)
+	s.engine.GET("/v0/management/oauth-callback", s.managementAvailabilityMiddleware(), s.mgmt.ManagementSecretBoundary().Callback(), s.mgmt.GetOAuthCallback)
 
-	mgmt := s.engine.Group("/v0/management")
-	mgmt.Use(s.managementAvailabilityMiddleware(), s.mgmt.Middleware())
+	mgmt := s.managementGroup("/v0/management")
 	{
 		mgmt.GET("/config", s.mgmt.GetConfig)
 		mgmt.GET("/config.yaml", s.mgmt.GetConfigYAML)
@@ -201,6 +200,10 @@ func (s *Server) registerManagementRoutes() {
 	}
 }
 
+func (s *Server) managementGroup(prefix string) *gin.RouterGroup {
+	return s.engine.Group(prefix, s.managementAvailabilityMiddleware(), s.mgmt.Middleware(), s.mgmt.ManagementSecretBoundary().Gin())
+}
+
 func (s *Server) managementAvailabilityMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if !s.managementAvailable(c) {
@@ -279,6 +282,10 @@ func (s *Server) pluginManagementNoRoute(c *gin.Context) {
 	if c.IsAborted() {
 		return
 	}
+	s.mgmt.ManagementSecretBoundary().Wrap(s.servePluginManagement)(c)
+}
+
+func (s *Server) servePluginManagement(c *gin.Context) {
 	if s.mgmt.ServePluginAuthURL(c) {
 		c.Abort()
 		return
