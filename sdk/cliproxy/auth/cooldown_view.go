@@ -10,7 +10,7 @@ import (
 // credential availability. It contains no credential metadata or raw errors.
 type CooldownView struct {
 	Scope            string    `json:"scope"`
-	ModelKey         string    `json:"model_key,omitempty"`
+	ModelKey         string    `json:"model_key,omitempty" secret:"public"`
 	Reason           string    `json:"reason"`
 	RetryAt          time.Time `json:"retry_at"`
 	RemainingSeconds int64     `json:"remaining_seconds"`

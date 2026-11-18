@@ -530,8 +530,8 @@ func (c *DeviceFlowClient) exchangeDeviceCode(ctx context.Context, deviceCode st
 	var oauthResp struct {
 		Error            string  `json:"error"`
 		ErrorDescription string  `json:"error_description"`
-		AccessToken      string  `json:"access_token"`
-		RefreshToken     string  `json:"refresh_token"`
+		AccessToken      string  `json:"access_token" secret:"value"`
+		RefreshToken     string  `json:"refresh_token" secret:"value"`
 		TokenType        string  `json:"token_type"`
 		ExpiresIn        float64 `json:"expires_in"`
 		Scope            string  `json:"scope"`
@@ -638,8 +638,8 @@ func (c *DeviceFlowClient) refreshTokenSingleFlight(ctx context.Context, refresh
 	}
 
 	var tokenResp struct {
-		AccessToken  string  `json:"access_token"`
-		RefreshToken string  `json:"refresh_token"`
+		AccessToken  string  `json:"access_token" secret:"value"`
+		RefreshToken string  `json:"refresh_token" secret:"value"`
 		TokenType    string  `json:"token_type"`
 		ExpiresIn    float64 `json:"expires_in"`
 		Scope        string  `json:"scope"`

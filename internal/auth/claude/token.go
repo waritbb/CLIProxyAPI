@@ -18,13 +18,13 @@ import (
 // for managing access tokens, refresh tokens, and user account information.
 type ClaudeTokenStorage struct {
 	// IDToken is the JWT ID token containing user claims and identity information.
-	IDToken string `json:"id_token"`
+	IDToken string `json:"id_token" secret:"value"`
 
 	// AccessToken is the OAuth2 access token used for authenticating API requests.
-	AccessToken string `json:"access_token"`
+	AccessToken string `json:"access_token" secret:"value"`
 
 	// RefreshToken is used to obtain new access tokens when the current one expires.
-	RefreshToken string `json:"refresh_token"`
+	RefreshToken string `json:"refresh_token" secret:"value"`
 
 	// LastRefresh is the timestamp of the last token refresh operation.
 	LastRefresh string `json:"last_refresh"`

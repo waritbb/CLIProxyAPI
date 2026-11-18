@@ -326,6 +326,7 @@ func (h *Handler) installPluginFromStore(c *gin.Context, goos, goarch string) {
 		})
 		return
 	}
+	h.secretSource = nil
 	if errEnable := h.enablePluginConfigLocked(id, manifest); errEnable != nil {
 		h.mu.Unlock()
 		c.JSON(http.StatusInternalServerError, gin.H{

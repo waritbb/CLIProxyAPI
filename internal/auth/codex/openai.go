@@ -14,11 +14,11 @@ type PKCECodes struct {
 // It includes the ID token, access token, refresh token, and associated user details.
 type CodexTokenData struct {
 	// IDToken is the JWT ID token containing user claims
-	IDToken string `json:"id_token"`
+	IDToken string `json:"id_token" secret:"value"`
 	// AccessToken is the OAuth2 access token for API access
-	AccessToken string `json:"access_token"`
+	AccessToken string `json:"access_token" secret:"value"`
 	// RefreshToken is used to obtain new access tokens
-	RefreshToken string `json:"refresh_token"`
+	RefreshToken string `json:"refresh_token" secret:"value"`
 	// AccountID is the OpenAI account identifier
 	AccountID string `json:"account_id"`
 	// Email is the OpenAI account email
@@ -31,9 +31,9 @@ type CodexTokenData struct {
 
 // CodexSIWCTokenData holds the OAuth token information obtained from OpenAI's Sign in with ChatGPT (SIWC) flow.
 type CodexSIWCTokenData struct {
-	AccessToken       string   `json:"access_token"`
-	RefreshToken      string   `json:"refresh_token"`
-	IDToken           string   `json:"id_token,omitempty"`
+	AccessToken       string   `json:"access_token" secret:"value"`
+	RefreshToken      string   `json:"refresh_token" secret:"value"`
+	IDToken           string   `json:"id_token,omitempty" secret:"value"`
 	ClientID          string   `json:"client_id"`
 	Scope             string   `json:"scope,omitempty"`
 	Scopes            []string `json:"scopes,omitempty"`
@@ -83,7 +83,7 @@ func (d *CodexSIWCTokenData) ToMap() map[string]any {
 // This includes the API key, token data, and the timestamp of the last refresh.
 type CodexAuthBundle struct {
 	// APIKey is the OpenAI API key obtained from token exchange
-	APIKey string `json:"api_key"`
+	APIKey string `json:"api_key" secret:"value"`
 	// TokenData contains the OAuth tokens from the authentication flow
 	TokenData CodexTokenData `json:"token_data"`
 	// LastRefresh is the timestamp of the last token refresh

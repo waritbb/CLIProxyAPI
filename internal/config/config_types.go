@@ -38,7 +38,7 @@ type PluginsConfig struct {
 	// AuthRevision changes when Home-managed plugin credentials change.
 	AuthRevision int64 `yaml:"auth-revision,omitempty" json:"auth-revision,omitempty"`
 	// Configs stores per-plugin instance configuration by plugin ID.
-	Configs map[string]PluginInstanceConfig `yaml:"configs" json:"configs"`
+	Configs map[string]PluginInstanceConfig `yaml:"configs" json:"configs" secret:"walk"`
 }
 
 // PluginInstanceConfig stores host-owned plugin settings and the original plugin YAML subtree.
@@ -48,7 +48,7 @@ type PluginInstanceConfig struct {
 	// Priority controls plugin startup and routing order.
 	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
 	// Raw preserves the full original plugin configuration YAML subtree.
-	Raw yaml.Node `yaml:"-" json:"-"`
+	Raw yaml.Node `yaml:"-" json:"-" secret:"plugin-config"`
 }
 
 // UnmarshalYAML extracts host-owned fields while preserving the full original YAML node.
@@ -434,9 +434,9 @@ type CodexLiveMediaRelayConfig struct {
 
 // CodexLiveICEServer configures a STUN or TURN server for the media relay.
 type CodexLiveICEServer struct {
-	URLs       []string `yaml:"urls" json:"urls"`
-	Username   string   `yaml:"username" json:"-"`
-	Credential string   `yaml:"credential" json:"-"`
+	URLs       []string `yaml:"urls" json:"urls" secret:"url-userinfo"`
+	Username   string   `yaml:"username" json:"-" secret:"value"`
+	Credential string   `yaml:"credential" json:"-" secret:"value"`
 }
 
 // TLSConfig holds HTTPS server settings.
@@ -446,7 +446,7 @@ type TLSConfig struct {
 	// Cert is the path to the TLS certificate file.
 	Cert string `yaml:"cert" json:"cert"`
 	// Key is the path to the TLS private key file.
-	Key string `yaml:"key" json:"key"`
+	Key string `yaml:"key" json:"key" secret:"public"`
 }
 
 // PprofConfig holds pprof HTTP server settings.
@@ -531,10 +531,12 @@ type DiscoveryConfig struct {
 
 // RemoteManagement holds management API configuration under 'remote-management'.
 type RemoteManagement struct {
+	// SecretStateDir stores the persistent management handle key.
+	SecretStateDir string `yaml:"secret-state-dir,omitempty"`
 	// AllowRemote toggles remote (non-localhost) access to management API.
 	AllowRemote bool `yaml:"allow-remote"`
 	// SecretKey is the management key (plaintext or bcrypt hashed). YAML key intentionally 'secret-key'.
-	SecretKey string `yaml:"secret-key"`
+	SecretKey string `yaml:"secret-key" secret:"value"`
 	// DisableControlPanel skips serving and syncing the bundled management UI when true.
 	DisableControlPanel bool `yaml:"disable-control-panel"`
 	// DisableAutoUpdatePanel disables automatic periodic background updates of the management panel asset from GitHub.
@@ -544,7 +546,7 @@ type RemoteManagement struct {
 	// Accepts either a repository URL (https://github.com/org/repo) or an API releases endpoint.
 	PanelGitHubRepository string `yaml:"panel-github-repository"`
 	// BaseURL specifies the base URL of the remote management API for TUI client mode (e.g. "https://proxy.example.com").
-	BaseURL string `yaml:"base-url,omitempty" json:"base-url,omitempty"`
+	BaseURL string `yaml:"base-url,omitempty" json:"base-url,omitempty" secret:"url-userinfo"`
 }
 
 // QuotaExceeded defines the behavior when API quota limits are exceeded.
@@ -692,7 +694,7 @@ type PayloadFilterRule struct {
 	// Models lists model entries with name pattern and protocol constraint.
 	Models []PayloadModelRule `yaml:"models" json:"models"`
 	// Params lists JSON paths (gjson/sjson syntax) to remove from the payload.
-	Params []string `yaml:"params" json:"params"`
+	Params []string `yaml:"params" json:"params" secret:"public"`
 }
 
 // PayloadRule describes a single rule targeting a list of models with parameter updates.
@@ -701,7 +703,7 @@ type PayloadRule struct {
 	Models []PayloadModelRule `yaml:"models" json:"models"`
 	// Params maps JSON paths (gjson/sjson syntax) to values written into the payload.
 	// For *-raw rules, values are treated as raw JSON fragments (strings are used as-is).
-	Params map[string]any `yaml:"params" json:"params"`
+	Params map[string]any `yaml:"params" json:"params" secret:"public"`
 }
 
 // PayloadModelRule ties a model name pattern to a specific translator protocol.
@@ -711,13 +713,13 @@ type PayloadModelRule struct {
 	// Protocol restricts the rule to a specific translator format (e.g., "gemini", "responses").
 	Protocol string `yaml:"protocol" json:"protocol"`
 	// Headers restricts the rule to requests whose headers match all configured wildcard patterns.
-	Headers map[string]string `yaml:"headers" json:"headers"`
+	Headers map[string]string `yaml:"headers" json:"headers" secret:"sensitive-header-values"`
 	// FromProtocol restricts the rule to a specific source protocol (e.g., "gemini", "responses").
 	FromProtocol string `yaml:"from-protocol" json:"from-protocol"`
 	// Match requires payload JSON paths to equal the configured values.
-	Match []map[string]any `yaml:"match" json:"match"`
+	Match []map[string]any `yaml:"match" json:"match" secret:"public"`
 	// NotMatch requires payload JSON paths to not equal the configured values.
-	NotMatch []map[string]any `yaml:"not-match" json:"not-match"`
+	NotMatch []map[string]any `yaml:"not-match" json:"not-match" secret:"public"`
 	// Exist requires payload JSON paths to exist and not be null.
 	Exist []string `yaml:"exist" json:"exist"`
 	// NotExist requires payload JSON paths to be missing or null.
@@ -758,7 +760,7 @@ type CloakConfig struct {
 // including the API key itself and an optional base URL for the API endpoint.
 type ClaudeKey struct {
 	// APIKey is the authentication key for accessing Claude API services.
-	APIKey string `yaml:"api-key" json:"api-key"`
+	APIKey string `yaml:"api-key" json:"api-key" secret:"value"`
 
 	// Priority controls selection preference when multiple credentials match.
 	// Higher values are preferred; defaults to 0.
@@ -773,10 +775,10 @@ type ClaudeKey struct {
 
 	// BaseURL is the base URL for the Claude API endpoint.
 	// If empty, the default Claude API URL will be used.
-	BaseURL string `yaml:"base-url" json:"base-url"`
+	BaseURL string `yaml:"base-url" json:"base-url" secret:"url-userinfo"`
 
 	// ProxyURL overrides the global proxy setting for this API key if provided.
-	ProxyURL string `yaml:"proxy-url" json:"proxy-url"`
+	ProxyURL string `yaml:"proxy-url" json:"proxy-url" secret:"url-userinfo"`
 
 	// ConnectionPool configures upstream connection reuse for this credential.
 	// Omitted disables pooling (preserving the fresh-transport-per-request default);
@@ -787,7 +789,7 @@ type ClaudeKey struct {
 	Models []ClaudeModel `yaml:"models" json:"models"`
 
 	// Headers optionally adds extra HTTP headers for requests sent with this key.
-	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty" secret:"sensitive-header-values"`
 
 	// ExcludedModels lists model IDs that should be excluded for this provider.
 	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
@@ -883,7 +885,7 @@ func (m ClaudeModel) GetThinking() *registry.ThinkingSupport { return m.Thinking
 // including the API key itself and an optional base URL for the API endpoint.
 type CodexKey struct {
 	// APIKey is the authentication key for accessing Codex API services.
-	APIKey string `yaml:"api-key" json:"api-key"`
+	APIKey string `yaml:"api-key" json:"api-key" secret:"value"`
 
 	// Priority controls selection preference when multiple credentials match.
 	// Higher values are preferred; defaults to 0.
@@ -898,7 +900,7 @@ type CodexKey struct {
 
 	// BaseURL is the base URL for the Codex API endpoint.
 	// If empty, the default Codex API URL will be used.
-	BaseURL string `yaml:"base-url" json:"base-url"`
+	BaseURL string `yaml:"base-url" json:"base-url" secret:"url-userinfo"`
 
 	// Websockets enables the Responses API websocket transport for this credential.
 	Websockets bool `yaml:"websockets,omitempty" json:"websockets,omitempty"`
@@ -907,7 +909,7 @@ type CodexKey struct {
 	AlphaSearch bool `yaml:"alpha-search,omitempty" json:"alpha-search,omitempty"`
 
 	// ProxyURL overrides the global proxy setting for this API key if provided.
-	ProxyURL string `yaml:"proxy-url" json:"proxy-url"`
+	ProxyURL string `yaml:"proxy-url" json:"proxy-url" secret:"url-userinfo"`
 
 	// ConnectionPool configures upstream connection reuse for this credential.
 	// Omitted disables pooling (preserving the fresh-transport-per-request default);
@@ -918,7 +920,7 @@ type CodexKey struct {
 	Models []CodexModel `yaml:"models" json:"models"`
 
 	// Headers optionally adds extra HTTP headers for requests sent with this key.
-	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty" secret:"sensitive-header-values"`
 
 	// ExcludedModels lists model IDs that should be excluded for this provider.
 	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
@@ -1007,7 +1009,7 @@ type MetaModel = CodexModel
 // including optional overrides for upstream base URL, proxy routing, and headers.
 type GeminiKey struct {
 	// APIKey is the authentication key for accessing Gemini API services.
-	APIKey string `yaml:"api-key" json:"api-key"`
+	APIKey string `yaml:"api-key" json:"api-key" secret:"value"`
 
 	// Priority controls selection preference when multiple credentials match.
 	// Higher values are preferred; defaults to 0.
@@ -1021,10 +1023,10 @@ type GeminiKey struct {
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
 
 	// BaseURL optionally overrides the Gemini API endpoint.
-	BaseURL string `yaml:"base-url,omitempty" json:"base-url,omitempty"`
+	BaseURL string `yaml:"base-url,omitempty" json:"base-url,omitempty" secret:"url-userinfo"`
 
 	// ProxyURL optionally overrides the global proxy for this API key.
-	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty" secret:"url-userinfo"`
 
 	// ConnectionPool configures upstream connection reuse for this credential.
 	// Omitted disables pooling (preserving the fresh-transport-per-request default);
@@ -1035,7 +1037,7 @@ type GeminiKey struct {
 	Models []GeminiModel `yaml:"models,omitempty" json:"models,omitempty"`
 
 	// Headers optionally adds extra HTTP headers for requests sent with this key.
-	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty" secret:"sensitive-header-values"`
 
 	// ExcludedModels lists model IDs that should be excluded for this provider.
 	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
@@ -1113,7 +1115,7 @@ type OpenAICompatibility struct {
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
 
 	// BaseURL is the base URL for the external OpenAI-compatible API endpoint.
-	BaseURL string `yaml:"base-url" json:"base-url"`
+	BaseURL string `yaml:"base-url" json:"base-url" secret:"url-userinfo"`
 
 	// APIKeyEntries defines API keys with optional per-key proxy configuration.
 	APIKeyEntries []OpenAICompatibilityAPIKey `yaml:"api-key-entries,omitempty" json:"api-key-entries,omitempty"`
@@ -1126,7 +1128,7 @@ type OpenAICompatibility struct {
 	Models []OpenAICompatibilityModel `yaml:"models" json:"models"`
 
 	// Headers optionally adds extra HTTP headers for requests sent to this provider.
-	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty" secret:"sensitive-header-values"`
 
 	// SupportPromptCacheKey enables derived prompt_cache_key injection for supported requests.
 	SupportPromptCacheKey bool `yaml:"support-prompt-cache-key,omitempty" json:"support-prompt-cache-key,omitempty"`
@@ -1146,14 +1148,14 @@ type OpenAICompatibility struct {
 // OpenAICompatibilityAPIKey represents an API key configuration with optional proxy setting.
 type OpenAICompatibilityAPIKey struct {
 	// APIKey is the authentication key for accessing the external API services.
-	APIKey string `yaml:"api-key" json:"api-key"`
+	APIKey string `yaml:"api-key" json:"api-key" secret:"value"`
 
 	// Weight controls proportional selection under weighted-round-robin.
 	// An omitted value defaults to 1; non-positive values exclude this credential; maximum 1,000,000.
 	Weight *int `yaml:"weight,omitempty" json:"weight,omitempty"`
 
 	// ProxyURL overrides the global proxy setting for this API key if provided.
-	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty" secret:"url-userinfo"`
 
 	// ConnectionPool configures upstream connection reuse for this key, overriding
 	// the provider-group default field by field. Pools stay per credential, so

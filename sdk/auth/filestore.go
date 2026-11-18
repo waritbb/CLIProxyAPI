@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/MoeForge/moego/json"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/secretboundary"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
@@ -132,6 +133,9 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 			raw, errMarshal := json.Marshal(auth.Metadata)
 			if errMarshal != nil {
 				return "", fmt.Errorf("auth filestore: marshal metadata failed: %w", errMarshal)
+			}
+			if err := secretboundary.ValidateAuthFile(raw); err != nil {
+				return "", err
 			}
 			if existing, errRead := os.ReadFile(path); errRead == nil {
 				if jsonEqual(existing, raw) {

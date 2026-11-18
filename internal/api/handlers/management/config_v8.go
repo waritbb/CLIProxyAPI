@@ -1,6 +1,7 @@
 package management
 
 import (
+	"bytes"
 	"io"
 	"net/http"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/secretboundary"
 	"gopkg.in/yaml.v3"
 )
 
@@ -55,7 +57,9 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 		parts = strings.Split(path, "/")
 	}
 	yamlRequest := strings.HasSuffix(c.FullPath(), "/config.yaml")
+	providerListPut := c.Request.Method == http.MethodPut && len(parts) == 2 && parts[0] == "api-keys"
 	if c.Request.Method == http.MethodGet {
+		includeConfigSource(c, raw)
 		config.ProjectV8ConfigAliases(root, strings.Join(parts, "."))
 		if !yamlRequest {
 			if servers := configV8Node(root, v8ICEServersPath); servers != nil && servers.Kind == yaml.SequenceNode {
@@ -77,6 +81,9 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 			c.Data(http.StatusOK, "application/yaml; charset=utf-8", data)
 			return
 		}
+		secretboundary.RedactPluginConfigTree(c, root)
+		secretboundary.StringifyConfigSecrets(c, root)
+		value = configV8Node(root, parts)
 		var result any
 		if err = value.Decode(&result); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "decode_failed"})
@@ -121,6 +128,13 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_config", "message": err.Error()})
 				return
 			}
+		}
+		if c.Request.Method == http.MethodPut &&
+			(yamlRequest && sameConfigYAML(before, update.Content[0]) ||
+				providerListPut && sameConfigValue(configV8Node(root, parts), update.Content[0])) {
+			c.Header("ETag", configV8ETag(diskHash))
+			c.JSON(http.StatusOK, gin.H{"status": "ok", "config-version": 8})
+			return
 		}
 		// Paths identify YAML keys, never array indexes. Lists are replaced whole.
 		dst := root
@@ -221,7 +235,27 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 	}
 	snapshot := h.reloadSnapshotConfigLocked()
 	h.reloadConfigAfterManagementSaveAsync(c.Request.Context(), snapshot)
-	c.JSON(http.StatusOK, gin.H{"status": "ok", "config-version": 8})
+	response := gin.H{"status": "ok", "config-version": 8}
+	if providerListPut && secretboundary.Protected(c) {
+		includeConfigSource(c, data)
+		secretboundary.StringifyConfigSecrets(c, root)
+		var items any
+		if value := configV8Node(root, parts); value != nil && value.Decode(&items) == nil {
+			response["items"] = items
+		}
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+func sameConfigYAML(before, submitted *yaml.Node) bool {
+	a, errBefore := yaml.Marshal(before)
+	b, errSubmitted := yaml.Marshal(submitted)
+	return errBefore == nil && errSubmitted == nil && bytes.Equal(a, b)
+}
+
+func sameConfigValue(before, submitted *yaml.Node) bool {
+	var a, b any
+	return before != nil && before.Decode(&a) == nil && submitted.Decode(&b) == nil && reflect.DeepEqual(a, b)
 }
 
 // configV8ETag renders a config source hash as a strong ETag.

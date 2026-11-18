@@ -356,7 +356,7 @@ type homeAuthDispatchResponse struct {
 	Model         string                 `json:"model"`
 	Provider      string                 `json:"provider"`
 	AuthIndex     string                 `json:"auth_index"`
-	UserAPIKey    string                 `json:"user_api_key"`
+	UserAPIKey    string                 `json:"user_api_key" secret:"value"`
 	RequestRetry  *int                   `json:"request_retry,omitempty"`
 	ForceMapping  bool                   `json:"force_mapping"`
 	OriginalAlias string                 `json:"original_alias"`

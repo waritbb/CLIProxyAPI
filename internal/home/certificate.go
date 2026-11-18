@@ -36,7 +36,7 @@ type homeJWTClaims struct {
 	CertificateID    string `json:"certificate_id"`
 	ClusterID        string `json:"cluster_id"`
 	CAFingerprint    string `json:"ca_fingerprint"`
-	EnrollmentSecret string `json:"enrollment_secret"`
+	EnrollmentSecret string `json:"enrollment_secret" secret:"value"`
 	IP               string `json:"ip"`
 	Port             int    `json:"port"`
 	IssuedAt         int64  `json:"iat"`

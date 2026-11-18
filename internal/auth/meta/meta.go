@@ -56,7 +56,7 @@ type DeviceCodeResponse struct {
 
 // TokenData represents the token response from Meta's OAuth token endpoint.
 type TokenData struct {
-	AccessToken      string `json:"access_token"`
+	AccessToken      string `json:"access_token" secret:"value"`
 	TokenType        string `json:"token_type"`
 	ExpiresIn        int    `json:"expires_in,omitempty"`
 	ExpiresAt        int64  `json:"expires_at,omitempty"`
@@ -66,7 +66,7 @@ type TokenData struct {
 
 // MintedKeyResponse represents the API key response minted from https://api.meta.ai/muse-code/key.
 type MintedKeyResponse struct {
-	APIKey           string `json:"api_key"`
+	APIKey           string `json:"api_key" secret:"value"`
 	BaseURL          string `json:"base_url"`
 	UserEmail        string `json:"user_email"`
 	UserFullName     string `json:"user_full_name"`
@@ -90,9 +90,9 @@ type MetaAuthBundle struct {
 type MetaTokenStorage struct {
 	Type         string `json:"type"`
 	AuthKind     string `json:"auth_kind"`
-	AccessToken  string `json:"access_token"`
-	DCAToken     string `json:"dca_token,omitempty"`
-	APIKey       string `json:"api_key,omitempty"`
+	AccessToken  string `json:"access_token" secret:"value"`
+	DCAToken     string `json:"dca_token,omitempty" secret:"value"`
+	APIKey       string `json:"api_key,omitempty" secret:"value"`
 	TokenType    string `json:"token_type,omitempty"`
 	ExpiresIn    int    `json:"expires_in,omitempty"`
 	Expired      string `json:"expired,omitempty"`

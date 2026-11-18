@@ -153,9 +153,9 @@ func (o *CodexAuth) ExchangeCodeForTokensWithRedirect(ctx context.Context, code,
 
 	// Parse token response
 	var tokenResp struct {
-		AccessToken  string `json:"access_token"`
-		RefreshToken string `json:"refresh_token"`
-		IDToken      string `json:"id_token"`
+		AccessToken  string `json:"access_token" secret:"value"`
+		RefreshToken string `json:"refresh_token" secret:"value"`
+		IDToken      string `json:"id_token" secret:"value"`
 		TokenType    string `json:"token_type"`
 		ExpiresIn    int    `json:"expires_in"`
 	}
@@ -270,9 +270,9 @@ func (o *CodexAuth) refreshTokensSingleFlight(ctx context.Context, refreshToken 
 	}
 
 	var tokenResp struct {
-		AccessToken  string `json:"access_token"`
-		RefreshToken string `json:"refresh_token"`
-		IDToken      string `json:"id_token"`
+		AccessToken  string `json:"access_token" secret:"value"`
+		RefreshToken string `json:"refresh_token" secret:"value"`
+		IDToken      string `json:"id_token" secret:"value"`
 		TokenType    string `json:"token_type"`
 		ExpiresIn    int    `json:"expires_in"`
 	}

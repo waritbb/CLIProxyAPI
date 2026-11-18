@@ -12,9 +12,9 @@ type PKCECodes struct {
 // ClaudeTokenData holds OAuth token information from Anthropic
 type ClaudeTokenData struct {
 	// AccessToken is the OAuth2 access token for API access.
-	AccessToken string `json:"access_token"`
+	AccessToken string `json:"access_token" secret:"value"`
 	// RefreshToken is used to obtain new access tokens.
-	RefreshToken string `json:"refresh_token"`
+	RefreshToken string `json:"refresh_token" secret:"value"`
 	// Email is the Anthropic account email.
 	Email string `json:"email"`
 	// AccountUUID identifies the Anthropic account returned by OAuth.
@@ -30,7 +30,7 @@ type ClaudeTokenData struct {
 // ClaudeAuthBundle aggregates authentication data after OAuth flow completion
 type ClaudeAuthBundle struct {
 	// APIKey is the Anthropic API key obtained from token exchange.
-	APIKey string `json:"api_key"`
+	APIKey string `json:"api_key" secret:"value"`
 	// TokenData contains the OAuth tokens from the authentication flow.
 	TokenData ClaudeTokenData `json:"token_data"`
 	// DeviceIDs contains the single device identity persisted with this credential.

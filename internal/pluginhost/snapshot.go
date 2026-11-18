@@ -69,6 +69,22 @@ func (h *Host) activeRecordsFromSnapshot(snap *Snapshot) []capabilityRecord {
 	return out
 }
 
+// ConfigFieldPolicies returns the type and secret flag of each declared field by plugin ID.
+func (s *Snapshot) ConfigFieldPolicies() map[string]map[string]pluginapi.ConfigField {
+	byPlugin := make(map[string]map[string]pluginapi.ConfigField)
+	for _, record := range s.records {
+		if len(record.meta.ConfigFields) == 0 {
+			continue
+		}
+		fields := make(map[string]pluginapi.ConfigField, len(record.meta.ConfigFields))
+		for _, field := range record.meta.ConfigFields {
+			fields[field.Name] = pluginapi.ConfigField{Type: field.Type, Secret: field.Secret}
+		}
+		byPlugin[record.id] = fields
+	}
+	return byPlugin
+}
+
 // RegisteredPlugins returns a stable copy of plugin metadata in the current runtime snapshot.
 func (h *Host) RegisteredPlugins() []RegisteredPluginInfo {
 	records := h.activeRecords()

@@ -2025,6 +2025,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						auth.Unavailable = true
 						auth.NextRetryAfter = time.Time{}
 						persistTOSAppealMetadata(auth, result.Error)
+						m.authGeneration.Add(1)
 					} else {
 						auth.Status = StatusError
 					}
@@ -2075,6 +2076,9 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						}
 					}
 					ownAuthForceDeadline, ownAuthRetryDeadline := applyAuthFailureState(auth, result.Error, result.RetryAfter, now, disableCooling)
+					if isTOSViolationResultError(result.Error) {
+						m.authGeneration.Add(1)
+					}
 					cooldownSeq := m.currentExecutionSeq()
 					isQuota429 := !disableCooling &&
 						statusCodeFromResult(result.Error) == 429 &&

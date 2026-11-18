@@ -65,6 +65,8 @@ type ConfigField struct {
 	Name string
 	// Type classifies the field value for management clients.
 	Type ConfigFieldType
+	// Secret marks a credential field whose values must also be redacted outside the plugin config.
+	Secret bool
 	// Default is the value used when the configuration key is omitted.
 	Default any
 	// EnumValues lists allowed values when Type is ConfigFieldTypeEnum.
@@ -1942,7 +1944,7 @@ func (b *QuotaBucket) UnmarshalJSON(data []byte) error {
 // QuotaMetric is a provider-defined, bounded numeric account summary for management UI rendering.
 // Format is "number" or "currency"; Currency is an ISO 4217 code when Format is "currency".
 type QuotaMetric struct {
-	Key      string  `json:"key"`
+	Key      string  `json:"key" secret:"public"`
 	Label    string  `json:"label"`
 	Value    float64 `json:"value"`
 	Unit     string  `json:"unit,omitempty"`

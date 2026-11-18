@@ -3,6 +3,8 @@ package management
 import (
 	"errors"
 	"fmt"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/secretboundary"
 	"net/http"
 	"os"
 	"sort"
@@ -54,6 +56,7 @@ type pluginMetadataInfo struct {
 }
 
 type pluginConfigFieldInfo struct {
+	Secret      bool     `json:"secret"`
 	Default     any      `json:"default"`
 	Name        string   `json:"name"`
 	Type        string   `json:"type"`
@@ -211,7 +214,7 @@ func (h *Handler) GetPluginConfig(c *gin.Context) {
 	h.mu.Unlock()
 
 	if configured {
-		body, errBody := pluginConfigJSONObject(item)
+		body, errBody := pluginConfigJSONObject(c, id, item)
 		if errBody != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "plugin_config_encode_failed", "message": errBody.Error()})
 			return
@@ -413,6 +416,7 @@ func (h *Handler) DeletePlugin(c *gin.Context) {
 
 	h.mu.Lock()
 	delete(h.cfg.Plugins.Configs, id)
+	h.secretSource = nil
 	if configured {
 		if errSave := config.SaveConfigPreserveComments(h.configFilePath, h.cfg, c.GetBool(ConfigV8ContextKey)); errSave != nil {
 			h.mu.Unlock()
@@ -496,6 +500,7 @@ func pluginConfigFields(fields []pluginapi.ConfigField) []pluginConfigFieldInfo 
 	out := make([]pluginConfigFieldInfo, 0, len(fields))
 	for _, field := range fields {
 		out = append(out, pluginConfigFieldInfo{
+			Secret:      field.Secret,
 			Name:        htmlsanitize.String(field.Name),
 			Type:        htmlsanitize.String(string(field.Type)),
 			Default:     htmlsanitize.JSONValue(field.Default),
@@ -596,8 +601,10 @@ func pluginConfigNode(item config.PluginInstanceConfig) *yaml.Node {
 	return node
 }
 
-func pluginConfigJSONObject(item config.PluginInstanceConfig) (map[string]any, error) {
-	value, errValue := yamlNodeToJSONValue(pluginConfigNode(item))
+func pluginConfigJSONObject(c *gin.Context, id string, item config.PluginInstanceConfig) (map[string]any, error) {
+	node := pluginConfigNode(item)
+	secretboundary.RedactPluginConfig(c, id, node)
+	value, errValue := yamlNodeToJSONValue(node)
 	if errValue != nil {
 		return nil, errValue
 	}

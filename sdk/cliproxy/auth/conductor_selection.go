@@ -2010,6 +2010,9 @@ func waitForCooldown(ctx context.Context, wait, maxWait time.Duration) error {
 	}
 }
 
+// AuthGeneration changes when credential metadata or auth membership changes.
+func (m *Manager) AuthGeneration() uint64 { return m.authGeneration.Load() }
+
 // List returns all auth entries currently known by the manager.
 func (m *Manager) List() []*Auth {
 	m.mu.RLock()

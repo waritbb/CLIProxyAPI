@@ -72,7 +72,7 @@ func goQuotaFixture(t *testing.T) (*gin.Engine, *coreauth.Manager, []*coreauth.A
 	}
 	h := NewHandler(cfg, configPath, manager)
 	router := gin.New()
-	v8 := router.Group("/v8/management", func(c *gin.Context) { c.Set(ConfigV8ContextKey, true) })
+	v8 := router.Group("/v8/management", h.ManagementSecretBoundary().Gin(), func(c *gin.Context) { c.Set(ConfigV8ContextKey, true) })
 	v8.GET("/credentials", h.ListAuthFiles)
 	v8.POST("/credentials/refresh", h.RefreshAuthFiles)
 	v8.POST("/credentials/verify", h.VerifyAuthFileV8)

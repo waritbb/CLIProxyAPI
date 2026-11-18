@@ -134,8 +134,8 @@ func isClaudeRefreshRetryable(err error) bool {
 // tokenResponse represents the response structure from Anthropic's OAuth token endpoint.
 // It contains access token, refresh token, and associated user/organization information.
 type tokenResponse struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
+	AccessToken  string `json:"access_token" secret:"value"`
+	RefreshToken string `json:"refresh_token" secret:"value"`
 	TokenType    string `json:"token_type"`
 	ExpiresIn    int    `json:"expires_in"`
 	Organization struct {

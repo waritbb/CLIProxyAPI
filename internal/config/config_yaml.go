@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/secretboundary"
 	"os"
 	"strconv"
 	"strings"
@@ -46,6 +47,9 @@ func SaveConfigPreserveComments(configFile string, cfg *Config, migrateV8 ...boo
 	rendered, err := yaml.Marshal((*legacyConfig)(persistCfg))
 	if err != nil {
 		return err
+	}
+	if secretboundary.ContainsHandle(rendered) {
+		return secretboundary.ErrHandleInStorage
 	}
 	var generated yaml.Node
 	if err = yaml.Unmarshal(rendered, &generated); err != nil {
@@ -107,6 +111,9 @@ func SaveConfigPreserveComments(configFile string, cfg *Config, migrateV8 ...boo
 		return err
 	}
 	data = NormalizeCommentIndentation(buf.Bytes())
+	if secretboundary.ContainsHandle(data) {
+		return secretboundary.ErrHandleInStorage
+	}
 	var migrated *Config
 	if migrating {
 		data, _, err = NormalizeConfigLayout(data, true)
@@ -138,6 +145,9 @@ func SaveConfigPreserveCommentsUpdateNestedScalar(configFile string, path []stri
 	data, err = updateNestedScalarYAML(data, path, value)
 	if err != nil {
 		return err
+	}
+	if secretboundary.ContainsHandle(data) {
+		return secretboundary.ErrHandleInStorage
 	}
 	return os.WriteFile(configFile, data, 0600)
 }

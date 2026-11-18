@@ -62,7 +62,7 @@ func (c *tavilyClient) nextKey() string {
 }
 
 type tavilySearchRequest struct {
-	APIKey        string `json:"api_key"`
+	APIKey        string `json:"api_key" secret:"value"`
 	Query         string `json:"query"`
 	SearchDepth   string `json:"search_depth,omitempty"`
 	MaxResults    int    `json:"max_results,omitempty"`

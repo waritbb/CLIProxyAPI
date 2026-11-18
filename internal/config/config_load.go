@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/secretboundary"
 	"os"
 	"strings"
 	"syscall"
@@ -64,6 +65,9 @@ func PrepareConfigFileForUpload(configFile string) error {
 // key, so a YAML anchor or a copy elsewhere keeps the plaintext, and rewriting those could
 // change other settings that share them.
 func prepareConfigForUpload(data []byte) ([]byte, error) {
+	if err := secretboundary.ValidateConfig(data); err != nil {
+		return nil, err
+	}
 	var cfg Config
 	if errParse := yaml.Unmarshal(data, &cfg); errParse != nil {
 		return nil, fmt.Errorf("failed to parse config file: %w", errParse)
@@ -178,6 +182,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		return cfg, nil
 	}
 
+	if err := secretboundary.ValidateConfig(data); err != nil {
+		return nil, err
+	}
 	if errValidate := validateCredentialWeightYAML(data); errValidate != nil {
 		if optional {
 			cfgOptional := &Config{CredentialInFlight: DefaultCredentialInFlightConfig()}

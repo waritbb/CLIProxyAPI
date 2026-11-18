@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/secretboundary"
 	"strings"
 
 	log "github.com/sirupsen/logrus"
@@ -16,6 +17,9 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 		return nil, fmt.Errorf("config payload is empty")
 	}
 
+	if err := secretboundary.ValidateConfig(data); err != nil {
+		return nil, err
+	}
 	if errValidate := validateCredentialWeightYAML(data); errValidate != nil {
 		return nil, errValidate
 	}

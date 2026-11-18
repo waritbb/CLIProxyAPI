@@ -55,9 +55,9 @@ type DeviceCodeResponse struct {
 
 // TokenData holds xAI OAuth token data.
 type TokenData struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	IDToken      string `json:"id_token,omitempty"`
+	AccessToken  string `json:"access_token" secret:"value"`
+	RefreshToken string `json:"refresh_token" secret:"value"`
+	IDToken      string `json:"id_token,omitempty" secret:"value"`
 	TokenType    string `json:"token_type,omitempty"`
 	ExpiresIn    int    `json:"expires_in,omitempty"`
 	Expire       string `json:"expired,omitempty"`

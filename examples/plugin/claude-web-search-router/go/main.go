@@ -107,7 +107,7 @@ type pluginConfig struct {
 	XAIModel             string   `yaml:"xai_model"`
 	DefaultProvider      string   `yaml:"default_provider"`
 	DefaultProviderModel string   `yaml:"default_provider_model"`
-	TavilyAPIKeys        []string `yaml:"tavily_api_keys"`
+	TavilyAPIKeys        []string `yaml:"tavily_api_keys" secret:"value"`
 	RequireWebSearchOnly bool     `yaml:"require_web_search_only"`
 }
 
@@ -274,7 +274,7 @@ func pluginRegistration() registration {
 				{Name: "xai_model", Type: pluginapi.ConfigFieldTypeString, Description: "xAI Responses model with web_search (empty uses grok-4.3, not the client Claude model)."},
 				{Name: "default_provider", Type: pluginapi.ConfigFieldTypeString, Description: "Built-in provider key when route=default_provider."},
 				{Name: "default_provider_model", Type: pluginapi.ConfigFieldTypeString, Description: "Optional execution model on default_provider route."},
-				{Name: "tavily_api_keys", Type: pluginapi.ConfigFieldTypeArray, Description: "Tavily API keys (round-robin) when route=tavily."},
+				{Name: "tavily_api_keys", Type: pluginapi.ConfigFieldTypeArray, Secret: true, Description: "Tavily API keys (round-robin) when route=tavily."},
 				{Name: "require_web_search_only", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Require tools to be exclusively typed web_search (matches antigravity-only path)."},
 			},
 		},

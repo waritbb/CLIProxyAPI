@@ -202,7 +202,7 @@ func (h *Handler) PutGeminiKeys(c *gin.Context) {
 }
 func (h *Handler) PatchGeminiKey(c *gin.Context) {
 	type geminiKeyPatch struct {
-		APIKey              *string                          `json:"api-key"`
+		APIKey              *string                          `json:"api-key" secret:"value"`
 		Priority            *int                             `json:"priority"`
 		Weight              json.RawMessage                  `json:"weight"`
 		Prefix              *string                          `json:"prefix"`
@@ -408,7 +408,7 @@ func (h *Handler) PutInteractionsKeys(c *gin.Context) {
 }
 func (h *Handler) PatchInteractionsKey(c *gin.Context) {
 	type geminiKeyPatch struct {
-		APIKey              *string                          `json:"api-key"`
+		APIKey              *string                          `json:"api-key" secret:"value"`
 		Priority            *int                             `json:"priority"`
 		Weight              json.RawMessage                  `json:"weight"`
 		Prefix              *string                          `json:"prefix"`
@@ -650,7 +650,7 @@ func (h *Handler) PutClaudeKeys(c *gin.Context) {
 }
 func (h *Handler) PatchClaudeKey(c *gin.Context) {
 	type claudeKeyPatch struct {
-		APIKey                  *string                          `json:"api-key"`
+		APIKey                  *string                          `json:"api-key" secret:"value"`
 		Priority                *int                             `json:"priority"`
 		FingerprintProfile      *string                          `json:"fingerprint-profile"`
 		Weight                  json.RawMessage                  `json:"weight"`
@@ -1071,7 +1071,7 @@ func (h *Handler) PutVertexCompatKeys(c *gin.Context) {
 }
 func (h *Handler) PatchVertexCompatKey(c *gin.Context) {
 	type vertexCompatPatch struct {
-		APIKey         *string                     `json:"api-key"`
+		APIKey         *string                     `json:"api-key" secret:"value"`
 		Priority       *int                        `json:"priority"`
 		Weight         json.RawMessage             `json:"weight"`
 		Prefix         *string                     `json:"prefix"`
@@ -1559,7 +1559,7 @@ func (h *Handler) PutCodexKeys(c *gin.Context) {
 }
 func (h *Handler) PatchCodexKey(c *gin.Context) {
 	type codexKeyPatch struct {
-		APIKey               *string                          `json:"api-key"`
+		APIKey               *string                          `json:"api-key" secret:"value"`
 		Priority             *int                             `json:"priority"`
 		Weight               json.RawMessage                  `json:"weight"`
 		Prefix               *string                          `json:"prefix"`
@@ -1761,7 +1761,7 @@ func (h *Handler) PutXAIKeys(c *gin.Context) {
 
 func (h *Handler) PatchXAIKey(c *gin.Context) {
 	type xaiKeyPatch struct {
-		APIKey              *string                          `json:"api-key"`
+		APIKey              *string                          `json:"api-key" secret:"value"`
 		Priority            *int                             `json:"priority"`
 		Weight              json.RawMessage                  `json:"weight"`
 		Prefix              *string                          `json:"prefix"`
@@ -1959,7 +1959,7 @@ func (h *Handler) PutMetaKeys(c *gin.Context) {
 
 func (h *Handler) PatchMetaKey(c *gin.Context) {
 	type metaKeyPatch struct {
-		APIKey              *string                          `json:"api-key"`
+		APIKey              *string                          `json:"api-key" secret:"value"`
 		Priority            *int                             `json:"priority"`
 		Weight              json.RawMessage                  `json:"weight"`
 		Prefix              *string                          `json:"prefix"`

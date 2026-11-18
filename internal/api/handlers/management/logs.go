@@ -6,6 +6,8 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/secretboundary"
 	"io"
 	"math"
 	"net/http"
@@ -352,7 +354,7 @@ func (h *Handler) GetRequestLogByID(c *gin.Context) {
 		return
 	}
 
-	c.FileAttachment(fullPath, matchedFile)
+	secretboundary.DownloadLog(c, fullPath, matchedFile)
 }
 
 type logFileMeta struct {
@@ -480,7 +482,7 @@ func (h *Handler) DownloadRequestErrorLog(c *gin.Context) {
 		return
 	}
 
-	c.FileAttachment(fullPath, name)
+	secretboundary.DownloadLog(c, fullPath, name)
 }
 
 func (h *Handler) logDirectory() string {

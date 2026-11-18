@@ -159,6 +159,7 @@ func (m *Manager) BindCodexSIWC(ctx context.Context, id string, expectedEpoch ui
 		updated.UpdatedAt = now
 		updated.ClearFileSnapshot()
 		m.auths[id] = updated
+		m.authGeneration.Add(1)
 		m.notifyAuthChangeLocked(id)
 		committed = updated.Clone()
 		m.mu.Unlock()
