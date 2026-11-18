@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -357,6 +358,8 @@ plugins:
       threshold: 2.5
       untyped: %s
       blank: ""
+      empty_token: ""
+      null_secret: ~
       tavily_api_keys: [%s]
       nested: {CREDENTIALS: [[%s]], pin: 76543210}
     no-manifest:
@@ -376,21 +379,24 @@ plugins:
 	if err := json.Unmarshal([]byte(`{"Name":"upstream","Type":"string","secret":true}`), &secretField); err != nil {
 		t.Fatal("could not decode the manifest field")
 	}
-	host.RegisterPluginForTest("router", pluginapi.Plugin{Metadata: pluginapi.Metadata{ConfigFields: []pluginapi.ConfigField{
-		secretField,
-		{Name: "mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"round-robin"}},
-		{Name: "default_provider", Type: pluginapi.ConfigFieldTypeString},
-		{Name: "model", Type: pluginapi.ConfigFieldTypeString},
-		{Name: "models", Type: pluginapi.ConfigFieldTypeArray},
-		{Name: "endpoint_auth", Type: pluginapi.ConfigFieldTypeString},
-		{Name: "max_tokens", Type: pluginapi.ConfigFieldTypeInteger},
-		{Name: "forward_cookies", Type: pluginapi.ConfigFieldTypeBoolean},
-		{Name: "mode_token", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"balanced"}},
-		{Name: "feature_enabled", Type: pluginapi.ConfigFieldTypeBoolean},
-		{Name: "threshold", Type: pluginapi.ConfigFieldTypeNumber},
-		{Name: "tavily_api_keys", Type: pluginapi.ConfigFieldTypeArray},
-		{Name: "nested", Type: pluginapi.ConfigFieldTypeObject},
-	}}})
+	register := func() {
+		host.RegisterPluginForTest("router", pluginapi.Plugin{Metadata: pluginapi.Metadata{ConfigFields: []pluginapi.ConfigField{
+			secretField,
+			{Name: "mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"round-robin"}},
+			{Name: "default_provider", Type: pluginapi.ConfigFieldTypeString},
+			{Name: "model", Type: pluginapi.ConfigFieldTypeString},
+			{Name: "models", Type: pluginapi.ConfigFieldTypeArray},
+			{Name: "endpoint_auth", Type: pluginapi.ConfigFieldTypeString},
+			{Name: "max_tokens", Type: pluginapi.ConfigFieldTypeInteger},
+			{Name: "forward_cookies", Type: pluginapi.ConfigFieldTypeBoolean},
+			{Name: "mode_token", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"balanced"}},
+			{Name: "feature_enabled", Type: pluginapi.ConfigFieldTypeBoolean},
+			{Name: "threshold", Type: pluginapi.ConfigFieldTypeNumber},
+			{Name: "tavily_api_keys", Type: pluginapi.ConfigFieldTypeArray},
+			{Name: "nested", Type: pluginapi.ConfigFieldTypeObject},
+		}}})
+	}
+	register()
 	models := registry.GetGlobalRegistry()
 	models.RegisterClient("fixture.json", "claude", []*registry.ModelInfo{{ID: "grok-4"}})
 	t.Cleanup(func() { models.UnregisterClient("fixture.json") })
@@ -422,11 +428,14 @@ plugins:
 		t.Helper()
 		for field, want := range map[string]any{
 			"enabled": true, "mode": "round-robin", "feature_enabled": true, "threshold": 2.5,
-			"forward_cookies": true, "mode_token": "balanced",
+			"forward_cookies": true, "mode_token": "balanced", "blank": "", "empty_token": "",
 		} {
 			if plugin[field] != want {
 				t.Errorf("plugin field %s did not retain its value and type", field)
 			}
+		}
+		if value, present := plugin["null_secret"]; !present || value != nil {
+			t.Error("null_secret did not retain its null value")
 		}
 		if maxTokens := plugin["max_tokens"]; maxTokens != 4096 && maxTokens != float64(4096) {
 			t.Error("max_tokens did not retain its number type and value")
@@ -438,7 +447,7 @@ plugins:
 		for name, raw := range map[string]any{
 			"tavily_api_keys": plugin["tavily_api_keys"], "nested credentials": nested["CREDENTIALS"], "untyped": plugin["untyped"],
 			"endpoint_auth": plugin["endpoint_auth"], "default_provider": plugin["default_provider"], "model": plugin["model"],
-			"upstream": plugin["upstream"], "recovery_token": plugin["recovery_token"], "blank": plugin["blank"],
+			"upstream": plugin["upstream"], "recovery_token": plugin["recovery_token"],
 		} {
 			encoded, _ := json.Marshal(raw)
 			if !secretboundary.ContainsHandle(encoded) {
@@ -492,6 +501,28 @@ plugins:
 		read(t, "/v0/management/plugins/router/config", &plugin)
 		assertPlugin(t, plugin)
 	})
+	t.Run("plugin editor schema", func(t *testing.T) {
+		var listing struct {
+			Plugins []struct {
+				ID     string
+				Fields []map[string]any `json:"config_fields"`
+			}
+		}
+		read(t, "/v8/management/plugins", &listing)
+		fields := make(map[string]any)
+		for _, plugin := range listing.Plugins {
+			if plugin.ID != "router" {
+				continue
+			}
+			for _, field := range plugin.Fields {
+				name, _ := field["name"].(string)
+				fields[name] = field["secret"]
+			}
+		}
+		if fields["upstream"] != true || fields["mode"] != false {
+			t.Error("plugin editor fields did not expose the manifest's secret flags")
+		}
+	})
 	t.Run("auth identity and models", func(t *testing.T) {
 		var auth struct{ Type, Provider string }
 		var rows struct{ Models []struct{ ID string } }
@@ -533,11 +564,41 @@ plugins:
 	if err != nil {
 		t.Fatal(err)
 	}
-	yaml := secretRequest(s, "GET", "/v8/management/config.yaml", "", nil)
-	saved := secretRequest(s, "PUT", "/v8/management/config.yaml", "application/yaml", yaml.Body.Bytes())
+	yamlBody := read(t, "/v8/management/config.yaml", nil)
+	saved := secretRequest(s, "PUT", "/v8/management/config.yaml", "application/yaml", yamlBody)
 	after, err := os.ReadFile(configPath)
 	if err != nil || saved.Code != 200 || !bytes.Equal(baseline, after) {
 		t.Fatalf("plugin YAML round trip changed bytes or returned %d", saved.Code)
+	}
+	parsePluginConfigs := func(t *testing.T, raw []byte) map[string]map[string]any {
+		t.Helper()
+		var doc struct {
+			Plugins struct {
+				Configs map[string]map[string]any
+			}
+		}
+		if err := yaml.Unmarshal(raw, &doc); err != nil || len(doc.Plugins.Configs["router"]) == 0 {
+			t.Fatal("could not parse the saved plugin config")
+		}
+		return doc.Plugins.Configs
+	}
+	want := parsePluginConfigs(t, baseline)
+	for _, route := range []string{"/v0/management/plugins/router/config", "/v8/management/config"} {
+		t.Run("save "+route, func(t *testing.T) {
+			register()
+			body := read(t, route, nil)
+			response := secretRequest(s, "PUT", route, "application/json", body)
+			if response.Code != http.StatusOK {
+				t.Fatalf("save returned HTTP %d", response.Code)
+			}
+			raw, err := os.ReadFile(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := parsePluginConfigs(t, raw); !reflect.DeepEqual(got, want) {
+				t.Error("save changed the parsed plugin config values or types")
+			}
+		})
 	}
 }
 

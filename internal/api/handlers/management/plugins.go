@@ -56,6 +56,7 @@ type pluginMetadataInfo struct {
 }
 
 type pluginConfigFieldInfo struct {
+	Secret      bool     `json:"secret"`
 	Default     any      `json:"default"`
 	Name        string   `json:"name"`
 	Type        string   `json:"type"`
@@ -499,6 +500,7 @@ func pluginConfigFields(fields []pluginapi.ConfigField) []pluginConfigFieldInfo 
 	out := make([]pluginConfigFieldInfo, 0, len(fields))
 	for _, field := range fields {
 		out = append(out, pluginConfigFieldInfo{
+			Secret:      field.Secret,
 			Name:        htmlsanitize.String(field.Name),
 			Type:        htmlsanitize.String(string(field.Type)),
 			Default:     htmlsanitize.JSONValue(field.Default),

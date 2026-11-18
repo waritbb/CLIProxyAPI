@@ -50,7 +50,7 @@ func (c candidates) addPluginSecret(node *yaml.Node, global bool) {
 	}
 	if tag := node.ShortTag(); tag != "!!str" {
 		c[candidate{value: node.Value, yamlTag: tag}] = false
-	} else if !global || node.Value == "" {
+	} else if !global {
 		// Plugin-only handles must resolve on save without redacting echoes.
 		c[candidate{value: node.Value, resolveOnly: true}] = false
 	}
@@ -97,6 +97,9 @@ func mappingValue(node *yaml.Node, name string) *yaml.Node {
 }
 
 func pluginLeafPolicy(node *yaml.Node, field pluginapi.ConfigField, name, parent string) (hideInPlace, global bool) {
+	if node.ShortTag() == "!!null" || node.Value == "" {
+		return false, false
+	}
 	switch field.Type {
 	case pluginapi.ConfigFieldTypeBoolean, pluginapi.ConfigFieldTypeNumber, pluginapi.ConfigFieldTypeInteger, pluginapi.ConfigFieldTypeEnum:
 		return false, false

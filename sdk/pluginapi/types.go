@@ -66,7 +66,7 @@ type ConfigField struct {
 	// Type classifies the field value for management clients.
 	Type ConfigFieldType
 	// Secret marks a credential field whose values must also be redacted outside the plugin config.
-	Secret bool `json:"secret"`
+	Secret bool
 	// Default is the value used when the configuration key is omitted.
 	Default any
 	// EnumValues lists allowed values when Type is ConfigFieldTypeEnum.
