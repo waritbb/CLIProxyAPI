@@ -33,8 +33,9 @@ func ContainsHandle(data []byte) bool { return handlePattern.Match(data) }
 
 // Snapshot supplies the config and the auth manager's current credential metadata.
 type Snapshot struct {
-	Config any
-	Auths  []map[string]any
+	Config     any
+	ConfigYAML []byte
+	Auths      []map[string]any
 }
 
 type Boundary struct {
@@ -123,8 +124,9 @@ func (b *Boundary) makeHandle(secret, domain string) string {
 }
 
 type candidate struct {
-	value   string
-	yamlTag string
+	value     string
+	yamlTag   string
+	yamlField string
 }
 
 type candidates map[candidate]bool // true permits short pipe-delimited segments
@@ -142,17 +144,25 @@ type index struct {
 	byValue      map[string]string
 	long         *strings.Replacer
 	typed        map[string]yaml.Node
+	byScalar     map[candidate]string
 	logSecrets   [256][]string
 	maxLogSecret int
 }
 
 func (b *Boundary) build(values candidates) *index {
-	idx := &index{values: values, byHandle: make(map[string]string), byValue: make(map[string]string), typed: make(map[string]yaml.Node)}
+	idx := &index{values: values, byHandle: make(map[string]string), byValue: make(map[string]string), typed: make(map[string]yaml.Node), byScalar: make(map[candidate]string)}
 	long := make([]string, 0, len(values))
 	for key := range values {
 		val := key.value
 		if key.yamlTag != "" {
-			idx.typed[b.scalarHandle(key)] = yaml.Node{Kind: yaml.ScalarNode, Tag: key.yamlTag, Value: val}
+			handle := b.scalarHandle(key)
+			if key.yamlField != "" {
+				idx.byScalar[key] = handle
+			}
+			idx.typed[handle] = yaml.Node{Kind: yaml.ScalarNode, Tag: key.yamlTag, Value: val}
+			continue
+		}
+		if key.yamlField != "" {
 			continue
 		}
 		handle := b.handle(val)
@@ -173,13 +183,17 @@ func (b *Boundary) build(values candidates) *index {
 	return idx
 }
 
-func (b *Boundary) setSnapshot(cfg any, auths []map[string]any) error {
+func (b *Boundary) setSnapshot(source *Snapshot) error {
 	values := make(candidates)
-	if err := values.addConfig(cfg); err != nil {
+	if err := values.addConfig(source.Config); err != nil {
 		b.current = nil
 		return err
 	}
-	for _, auth := range auths {
+	if err := values.addConfigYAML(source.ConfigYAML); err != nil {
+		b.current = nil
+		return err
+	}
+	for _, auth := range source.Auths {
 		values.auth(auth)
 	}
 	if b.current == nil || !maps.Equal(b.current.values, values) {
@@ -192,7 +206,7 @@ func (b *Boundary) Rebuild(cfg any, auths []map[string]any) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.previous = nil
-	return b.setSnapshot(cfg, auths)
+	return b.setSnapshot(&Snapshot{Config: cfg, Auths: auths})
 }
 
 func (b *Boundary) refresh() *index {
@@ -205,7 +219,7 @@ func (b *Boundary) refresh() *index {
 			return nil
 		}
 		if source != b.previous {
-			_ = b.setSnapshot(source.Config, source.Auths)
+			_ = b.setSnapshot(source)
 			b.previous = source
 		}
 	}
@@ -270,15 +284,15 @@ func (idx *index) resolve(value string) (string, error) {
 	return out, err
 }
 
-func (c candidates) addConfig(cfg any) error { return c.config(reflect.ValueOf(cfg), "") }
+func (c candidates) addConfig(cfg any) error { return c.config(reflect.ValueOf(cfg), "", "") }
 
-func (c candidates) config(v reflect.Value, tag string) error {
+func (c candidates) config(v reflect.Value, tag, yamlField string) error {
 	if tag == "public" || !v.IsValid() {
 		return nil
 	}
 	switch v.Kind() {
 	case reflect.Pointer, reflect.Interface:
-		return c.config(v.Elem(), tag)
+		return c.config(v.Elem(), tag, yamlField)
 	case reflect.Struct:
 		if v.Type() == reflect.TypeFor[yaml.Node]() {
 			if tag != "plugin-config" {
@@ -305,13 +319,14 @@ func (c candidates) config(v reflect.Value, tag string) error {
 					continue
 				}
 			}
-			if err := c.config(v.Field(i), mode); err != nil {
+			name, _, _ := strings.Cut(field.Tag.Get("yaml"), ",")
+			if err := c.config(v.Field(i), mode, name); err != nil {
 				return fmt.Errorf("%s: %w", field.Name, err)
 			}
 		}
 	case reflect.Slice, reflect.Array:
 		for i := range v.Len() {
-			if err := c.config(v.Index(i), tag); err != nil {
+			if err := c.config(v.Index(i), tag, yamlField); err != nil {
 				return err
 			}
 		}
@@ -330,10 +345,14 @@ func (c candidates) config(v reflect.Value, tag string) error {
 		iter := v.MapRange()
 		for iter.Next() {
 			if tag == "sensitive-header-values" {
-				c.header(iter.Key().String(), iter.Value().String(), true)
+				name, value := iter.Key().String(), iter.Value().String()
+				if sensitiveHeader(name) {
+					c.header(name, value, true)
+					c.addConfigField(name, value)
+				}
 				continue
 			}
-			if err := c.config(iter.Value(), tag); err != nil {
+			if err := c.config(iter.Value(), tag, yamlField); err != nil {
 				return err
 			}
 		}
@@ -341,6 +360,7 @@ func (c candidates) config(v reflect.Value, tag string) error {
 		switch tag {
 		case "value":
 			c.add(v.String(), true)
+			c.addConfigField(yamlField, v.String())
 		case "url-userinfo":
 			c.url(v.String())
 		}
@@ -362,12 +382,16 @@ func (c candidates) url(value string) {
 	}
 }
 
-func (c candidates) header(name, value string, shortSegments bool) {
+func sensitiveHeader(name string) bool {
 	lower := strings.ToLower(name)
-	if lower == "authorization" || lower == "proxy-authorization" ||
+	return lower == "authorization" || lower == "proxy-authorization" ||
 		strings.Contains(lower, "token") || strings.Contains(lower, "secret") ||
 		strings.Contains(lower, "key") || strings.Contains(lower, "cookie") ||
-		strings.Contains(lower, "credential") || strings.Contains(lower, "password") {
+		strings.Contains(lower, "credential") || strings.Contains(lower, "password")
+}
+
+func (c candidates) header(name, value string, shortSegments bool) {
+	if sensitiveHeader(name) {
 		c.add(value, shortSegments)
 		if scheme, token, ok := strings.Cut(value, " "); ok && strings.EqualFold(scheme, "Bearer") {
 			c.add(strings.TrimSpace(token), shortSegments)

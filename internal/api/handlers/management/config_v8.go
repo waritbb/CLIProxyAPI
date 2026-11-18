@@ -82,6 +82,7 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 			return
 		}
 		secretboundary.RedactPluginConfigTree(c, root)
+		secretboundary.StringifyConfigSecrets(c, root)
 		var result any
 		if err = value.Decode(&result); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "decode_failed"})
@@ -235,10 +236,11 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 	h.reloadConfigAfterManagementSaveAsync(c.Request.Context(), snapshot)
 	response := gin.H{"status": "ok", "config-version": 8}
 	if providerListPut && secretboundary.Protected(c) {
+		includeConfigSource(c, data)
+		secretboundary.StringifyConfigSecrets(c, root)
 		var items any
 		if value := configV8Node(root, parts); value != nil && value.Decode(&items) == nil {
 			response["items"] = items
-			includeConfigSource(c, data)
 		}
 	}
 	c.JSON(http.StatusOK, response)

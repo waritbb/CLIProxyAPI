@@ -214,7 +214,7 @@ func (h *Handler) GetPluginConfig(c *gin.Context) {
 
 	if configured {
 		if secretboundary.Protected(c) {
-			secretboundary.IncludeConfig(c, item)
+			secretboundary.IncludeConfig(c, item, nil)
 		}
 		body, errBody := pluginConfigJSONObject(c, item)
 		if errBody != nil {

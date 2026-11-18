@@ -32,7 +32,13 @@ func Protected(c *gin.Context) bool { return c.GetBool(protectedKey) }
 func IncludeAuthFile(c *gin.Context, data []byte) { c.Set(authFileKey, data) }
 
 // IncludeConfig adds the exact config version read by the handler.
-func IncludeConfig(c *gin.Context, cfg any) { c.Set(configSourceKey, cfg) }
+func IncludeConfig(c *gin.Context, cfg any, raw []byte) {
+	values := make(candidates)
+	if cfg == nil || values.addConfig(cfg) != nil || values.addConfigYAML(raw) != nil {
+		values = nil
+	}
+	c.Set(configSourceKey, values)
+}
 
 func (b *Boundary) Gin() gin.HandlerFunc {
 	return b.Wrap(func(c *gin.Context) { c.Next() })
@@ -103,9 +109,15 @@ func (b *Boundary) wrap(next gin.HandlerFunc, resolve bool) gin.HandlerFunc {
 				}
 				values.auth(metadata)
 			}
-			if hasConfig && (cfg == nil || values.addConfig(cfg) != nil) {
-				failClosed(c)
-				return
+			if hasConfig {
+				configValues := cfg.(candidates)
+				if configValues == nil {
+					failClosed(c)
+					return
+				}
+				for key, segment := range configValues {
+					values[key] = values[key] || segment
+				}
 			}
 			if !maps.Equal(values, after.values) {
 				idx = b.build(values)
@@ -119,7 +131,10 @@ func (b *Boundary) wrap(next gin.HandlerFunc, resolve bool) gin.HandlerFunc {
 		}
 		var prepare func(*yaml.Node) bool
 		if strings.HasSuffix(c.FullPath(), "/config.yaml") {
-			prepare = func(root *yaml.Node) bool { return visitPluginConfigs(root, b.redactPluginScalars) }
+			prepare = func(root *yaml.Node) bool {
+				changed := visitPluginConfigs(root, b.redactPluginScalars)
+				return visitConfigScalars(root, "", idx.redactConfigScalar) || changed
+			}
 		}
 		body, err := redactResponse(buffer, idx, prepare)
 		if err != nil || len(body) > maxBody {

@@ -64,8 +64,10 @@ func (h *Handler) secretSnapshot() *secretboundary.Snapshot {
 		return h.secretSource
 	}
 	var disk config.Config
+	var raw []byte
 	if h.configFilePath != "" {
-		raw, err := os.ReadFile(h.configFilePath)
+		var err error
+		raw, err = os.ReadFile(h.configFilePath)
 		if err == nil {
 			if err := yaml.Unmarshal(raw, &disk); err != nil {
 				return nil
@@ -88,7 +90,7 @@ func (h *Handler) secretSnapshot() *secretboundary.Snapshot {
 			}
 		}
 	}
-	source := &secretboundary.Snapshot{Config: []any{h.cfg.CloneForRuntime(), &disk, liveKeys}, Auths: auths}
+	source := &secretboundary.Snapshot{Config: []any{h.cfg.CloneForRuntime(), &disk, liveKeys}, ConfigYAML: raw, Auths: auths}
 	if cacheable {
 		h.secretSource, h.secretSourceVersion = source, version
 	}
@@ -98,8 +100,8 @@ func (h *Handler) secretSnapshot() *secretboundary.Snapshot {
 func includeConfigSource(c *gin.Context, raw []byte) {
 	var cfg config.Config
 	if err := yaml.Unmarshal(raw, &cfg); err != nil {
-		secretboundary.IncludeConfig(c, nil)
+		secretboundary.IncludeConfig(c, nil, nil)
 		return
 	}
-	secretboundary.IncludeConfig(c, &cfg)
+	secretboundary.IncludeConfig(c, &cfg, raw)
 }
