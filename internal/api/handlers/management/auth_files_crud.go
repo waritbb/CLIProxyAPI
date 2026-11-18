@@ -21,6 +21,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/goplan"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/synthesizer"
@@ -537,6 +538,9 @@ func (h *Handler) deleteAuthFileByName(ctx context.Context, name string) (string
 	targetPath := filepath.Join(h.currentHandlerAuthDir(), filepath.Base(name))
 	targetID := ""
 	if targetAuth := h.findAuthForDelete(name); targetAuth != nil {
+		if isV8AuthFileMutation(ctx) && goplan.Covers(targetAuth) {
+			return filepath.Base(name), http.StatusConflict, errors.New("credential is managed in configuration")
+		}
 		if !isPluginVirtualSourceDelete(name, targetAuth) {
 			return filepath.Base(name), http.StatusConflict, errPluginVirtualAuth
 		}

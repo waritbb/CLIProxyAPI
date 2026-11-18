@@ -13,6 +13,7 @@ import (
 	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/goplan"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
@@ -269,6 +270,20 @@ func (h *Handler) fetchQuotaForPlugin(c *gin.Context, pluginID, authIndex string
 	auth := h.authByIndex(authIndex)
 	if auth == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "auth not found"})
+		return
+	}
+
+	if pluginID == goplan.PluginID && c.GetBool(ConfigV8ContextKey) {
+		if !goplan.Covers(auth) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "quota provider not found for credential"})
+			return
+		}
+		reading, cause := h.goPlanQuota.Fetch(c.Request.Context(), auth, h.configSnapshot())
+		if cause != goplan.OK {
+			c.JSON(http.StatusBadGateway, gin.H{"error": goplan.CauseMessage(cause)})
+			return
+		}
+		c.JSON(http.StatusOK, goplan.Render(reading))
 		return
 	}
 

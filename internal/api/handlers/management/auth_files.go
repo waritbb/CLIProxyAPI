@@ -18,6 +18,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/credentialweight"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/goplan"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
@@ -130,20 +131,29 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 	observedAt := time.Now().UTC()
 	cooldownsKnown := !h.authManager.HomeEnabled()
 	if pagination.enabled {
-		matching := make([]*coreauth.Auth, 0, len(auths))
+		type candidate struct {
+			auth   *coreauth.Auth
+			goPlan bool
+		}
+		matching := make([]candidate, 0, len(auths))
 		for _, auth := range auths {
-			if !matchesAuthFileLookup(auth, nameFilter, authIndexFilter) || !isAuthFileListable(auth) {
+			if !matchesAuthFileLookup(auth, nameFilter, authIndexFilter) {
 				continue
 			}
-			matching = append(matching, auth)
+			goPlan := quota.v8 && goplan.Covers(auth)
+			if isAuthFileListable(auth, goPlan) {
+				matching = append(matching, candidate{auth: auth, goPlan: goPlan})
+			}
 		}
 		sort.Slice(matching, func(i, j int) bool {
-			return compareAuthFileListOrder(matching[i], matching[j]) < 0
+			return compareAuthFileListOrder(matching[i].auth, matching[j].auth) < 0
 		})
 		total := len(matching)
 		start, end := pagination.bounds(total)
 		files := make([]gin.H, 0, end-start)
-		for _, auth := range matching[start:end] {
+		for _, item := range matching[start:end] {
+			auth := item.auth
+			quota.goPlan = item.goPlan
 			if entry := h.buildAuthFileEntry(auth, quota); entry != nil {
 				entry["cooldowns"] = nil
 				if cooldownsKnown {
@@ -160,6 +170,7 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 		if !matchesAuthFileLookup(auth, nameFilter, authIndexFilter) {
 			continue
 		}
+		quota.goPlan = quota.v8 && goplan.Covers(auth)
 		if entry := h.buildAuthFileEntry(auth, quota); entry != nil {
 			entry["cooldowns"] = nil
 			if cooldownsKnown {
@@ -264,11 +275,11 @@ func compareAuthFileListOrder(left, right *coreauth.Auth) int {
 	return strings.Compare(leftIndex, rightIndex)
 }
 
-func isAuthFileListable(auth *coreauth.Auth) bool {
+func isAuthFileListable(auth *coreauth.Auth, goPlan bool) bool {
 	if auth == nil {
 		return false
 	}
-	runtimeOnly := isRuntimeOnlyAuth(auth)
+	runtimeOnly := goPlan || isRuntimeOnlyAuth(auth)
 	if runtimeOnly && (auth.Disabled || auth.Status == coreauth.StatusDisabled) {
 		return false
 	}
@@ -489,7 +500,8 @@ type authFileQuotaContext struct {
 	// A nil map means no quota plugins are available.
 	pluginIDs map[string]string
 	// v8 hides declarative quota_probe support because v8 only serves plugin quota routes.
-	v8 bool
+	v8     bool
+	goPlan bool
 }
 
 func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth, quota authFileQuotaContext) gin.H {
@@ -656,7 +668,7 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quota authFileQu
 		return nil
 	}
 	auth.EnsureIndex()
-	runtimeOnly := isRuntimeOnlyAuth(auth)
+	runtimeOnly := quota.goPlan || isRuntimeOnlyAuth(auth)
 	if runtimeOnly && (auth.Disabled || auth.Status == coreauth.StatusDisabled) {
 		return nil
 	}
@@ -691,7 +703,10 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quota authFileQu
 	if modelQuotas := modelQuotaObservationPayload(auth.Provider, auth.ModelStates); len(modelQuotas) > 0 {
 		entry["model_quotas"] = modelQuotas
 	}
-	if pluginID := quota.pluginIDs[strings.ToLower(strings.TrimSpace(auth.Provider))]; pluginID != "" {
+	if quota.goPlan {
+		entry["supports_quota"] = true
+		entry["quota_plugin_id"] = goplan.PluginID
+	} else if pluginID := quota.pluginIDs[strings.ToLower(strings.TrimSpace(auth.Provider))]; pluginID != "" {
 		entry["supports_quota"] = true
 		entry["quota_provider"] = auth.Provider
 		if quota.v8 {
@@ -722,7 +737,9 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quota authFileQu
 	if projectID := authProjectID(auth); projectID != "" {
 		entry["project_id"] = projectID
 	}
-	if accountType, account := auth.AccountInfo(); accountType != "" || account != "" {
+	if quota.goPlan {
+		entry["account_type"] = "api_key"
+	} else if accountType, account := auth.AccountInfo(); accountType != "" || account != "" {
 		if accountType != "" {
 			entry["account_type"] = accountType
 		}
