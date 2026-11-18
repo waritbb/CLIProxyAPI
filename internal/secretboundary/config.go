@@ -13,7 +13,7 @@ func (c candidates) addConfigField(name, value string) {
 }
 
 // addConfigYAML records the original YAML scalar forms of indexed credentials.
-func (c candidates) addConfigYAML(raw []byte, fields map[string]map[string]pluginapi.ConfigFieldType) error {
+func (c candidates) addConfigYAML(raw []byte, fields map[string]map[string]pluginapi.ConfigField) error {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
 		return err

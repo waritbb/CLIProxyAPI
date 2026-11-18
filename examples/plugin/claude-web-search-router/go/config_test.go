@@ -20,3 +20,12 @@ func TestConfigurePreservesDefaultBooleansWhenConfigIsPartial(t *testing.T) {
 		t.Fatalf("Route = %q, want codex_web_search", cfg.Route)
 	}
 }
+
+func TestRegistrationMarksTavilyKeysSecret(t *testing.T) {
+	for _, field := range pluginRegistration().Metadata.ConfigFields {
+		if field.Name == "tavily_api_keys" && field.Secret {
+			return
+		}
+	}
+	t.Fatal("the Tavily key list must be declared secret")
+}

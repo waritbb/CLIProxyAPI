@@ -330,6 +330,8 @@ func TestManagementSecretPluginConfig(t *testing.T) {
 	const key = "fixture-plugin-tavily-private"
 	const nestedKey = "fixture-plugin-nested-private"
 	const untyped = "fixture-plugin-untyped-private"
+	const flagged = "fixture-plugin-flagged-private"
+	const endpointAuth = "bearer"
 	f, err := os.OpenFile(configPath, os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		t.Fatal(err)
@@ -343,12 +345,23 @@ plugins:
       mode: round-robin
       default_provider: claude
       model: grok-4
+      models: [grok-4, claude]
+      endpoint_auth: %s
+      max_tokens: 4096
+      forward_cookies: true
+      mode_token: balanced
+      upstream: %s
+      nested_auth: {API_KEYS: {primary: fixture-plugin-parent-private, nested: {setting: fixture-plugin-deep-private}}}
+      recovery_token: 00123456
       feature_enabled: true
       threshold: 2.5
       untyped: %s
+      blank: ""
       tavily_api_keys: [%s]
       nested: {CREDENTIALS: [[%s]], pin: 76543210}
-`, untyped, key, nestedKey)
+    no-manifest:
+      strategy: round-robin
+`, endpointAuth, flagged, untyped, key, nestedKey)
 	if closeErr := f.Close(); err != nil || closeErr != nil {
 		t.Fatal("could not write fixture config")
 	}
@@ -359,10 +372,20 @@ plugins:
 	s.mgmt.SetConfig(cfg)
 	// Registration can complete after the management boundary has read config.
 	secretRequest(s, "GET", "/v8/management/config", "", nil)
+	var secretField pluginapi.ConfigField
+	if err := json.Unmarshal([]byte(`{"Name":"upstream","Type":"string","secret":true}`), &secretField); err != nil {
+		t.Fatal("could not decode the manifest field")
+	}
 	host.RegisterPluginForTest("router", pluginapi.Plugin{Metadata: pluginapi.Metadata{ConfigFields: []pluginapi.ConfigField{
+		secretField,
 		{Name: "mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"round-robin"}},
 		{Name: "default_provider", Type: pluginapi.ConfigFieldTypeString},
 		{Name: "model", Type: pluginapi.ConfigFieldTypeString},
+		{Name: "models", Type: pluginapi.ConfigFieldTypeArray},
+		{Name: "endpoint_auth", Type: pluginapi.ConfigFieldTypeString},
+		{Name: "max_tokens", Type: pluginapi.ConfigFieldTypeInteger},
+		{Name: "forward_cookies", Type: pluginapi.ConfigFieldTypeBoolean},
+		{Name: "mode_token", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"balanced"}},
 		{Name: "feature_enabled", Type: pluginapi.ConfigFieldTypeBoolean},
 		{Name: "threshold", Type: pluginapi.ConfigFieldTypeNumber},
 		{Name: "tavily_api_keys", Type: pluginapi.ConfigFieldTypeArray},
@@ -379,7 +402,7 @@ plugins:
 			t.Fatalf("%s: HTTP %d", route, got.Code)
 		}
 		body := got.Body.Bytes()
-		for name, value := range map[string]string{"tavily_api_keys": key, "nested credentials": nestedKey, "untyped": untyped} {
+		for name, value := range map[string]string{"tavily_api_keys": key, "nested credentials": nestedKey, "upstream": flagged} {
 			if bytes.Contains(body, []byte(value)) {
 				t.Errorf("%s: exposed %s", route, name)
 			}
@@ -399,19 +422,36 @@ plugins:
 		t.Helper()
 		for field, want := range map[string]any{
 			"enabled": true, "mode": "round-robin", "feature_enabled": true, "threshold": 2.5,
-			"default_provider": "claude", "model": "grok-4",
+			"forward_cookies": true, "mode_token": "balanced",
 		} {
 			if plugin[field] != want {
 				t.Errorf("plugin field %s did not retain its value and type", field)
 			}
 		}
+		if maxTokens := plugin["max_tokens"]; maxTokens != 4096 && maxTokens != float64(4096) {
+			t.Error("max_tokens did not retain its number type and value")
+		}
+		if priority := plugin["priority"]; priority != 42 && priority != float64(42) {
+			t.Error("priority did not retain its number type and value")
+		}
 		nested, _ := plugin["nested"].(map[string]any)
 		for name, raw := range map[string]any{
 			"tavily_api_keys": plugin["tavily_api_keys"], "nested credentials": nested["CREDENTIALS"], "untyped": plugin["untyped"],
+			"endpoint_auth": plugin["endpoint_auth"], "default_provider": plugin["default_provider"], "model": plugin["model"],
+			"upstream": plugin["upstream"], "recovery_token": plugin["recovery_token"], "blank": plugin["blank"],
 		} {
 			encoded, _ := json.Marshal(raw)
 			if !secretboundary.ContainsHandle(encoded) {
 				t.Errorf("plugin field %s is missing its handle", name)
+			}
+		}
+		modelList, _ := plugin["models"].([]any)
+		if len(modelList) != 2 {
+			t.Error("models did not retain its list shape")
+		}
+		for _, model := range modelList {
+			if handle, _ := model.(string); !secretboundary.ContainsHandle([]byte(handle)) {
+				t.Error("plugin model list item is missing its handle")
 			}
 		}
 		if pin := nested["pin"]; pin != 76543210 && pin != float64(76543210) {
@@ -426,9 +466,13 @@ plugins:
 			}
 			read(t, route, &config)
 			if config.Routing.Strategy != "round-robin" {
-				t.Error("routing strategy collided with plugin mode")
+				t.Error("routing strategy collided with a manifest-less plugin setting")
 			}
 			assertPlugin(t, config.Plugins.Configs["router"])
+			strategy, _ := config.Plugins.Configs["no-manifest"]["strategy"].(string)
+			if !secretboundary.ContainsHandle([]byte(strategy)) {
+				t.Error("manifest-less plugin strategy is missing its handle")
+			}
 		})
 	}
 	t.Run("v8 plugin JSON subpath", func(t *testing.T) {
@@ -440,7 +484,7 @@ plugins:
 		var routing struct{ Strategy string }
 		read(t, "/v0/management/routing/strategy", &routing)
 		if routing.Strategy != "round-robin" {
-			t.Error("routing strategy collided with plugin mode")
+			t.Error("routing strategy collided with a manifest-less plugin setting")
 		}
 	})
 	t.Run("legacy plugin JSON", func(t *testing.T) {
@@ -470,11 +514,18 @@ plugins:
 		dir := t.TempDir()
 		s.mgmt.SetLogDirectory(dir)
 		const name = "error-plugin-probe.log"
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(strings.Join([]string{key, nestedKey, untyped, "round-robin claude grok-4"}, " ")), 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(strings.Join([]string{
+			key, nestedKey, flagged, "fixture-plugin-parent-private", "fixture-plugin-deep-private",
+			untyped, "round-robin claude grok-4",
+		}, " ")), 0600); err != nil {
 			t.Fatal(err)
 		}
 		body := read(t, "/v8/management/observability/logs/errors/"+name, nil)
-		if !secretboundary.ContainsHandle(body) || !bytes.Contains(body, []byte("round-robin claude grok-4")) {
+		if bytes.Contains(body, []byte("fixture-plugin-parent-private")) {
+			t.Error("log exposed a credential under its nearest named parent")
+		}
+		if !secretboundary.ContainsHandle(body) || !bytes.Contains(body, []byte("round-robin claude grok-4")) ||
+			!bytes.Contains(body, []byte(untyped)) || !bytes.Contains(body, []byte("fixture-plugin-deep-private")) {
 			t.Error("log did not preserve public values alongside redacted credentials")
 		}
 	})

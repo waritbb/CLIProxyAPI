@@ -98,7 +98,7 @@ func (h *Handler) secretSnapshot() *secretboundary.Snapshot {
 	runtime := h.cfg.CloneForRuntime()
 	source := &secretboundary.Snapshot{Config: []any{runtime, &disk, liveKeys}, ConfigYAML: raw, Auths: auths}
 	if version.plugins != nil {
-		source.PluginFields = version.plugins.ConfigFieldTypes()
+		source.PluginFields = version.plugins.ConfigFieldPolicies()
 	}
 	if runtime != nil {
 		source.PluginConfigs = make(map[string]yaml.Node, len(runtime.Plugins.Configs))

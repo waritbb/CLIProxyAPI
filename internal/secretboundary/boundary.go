@@ -38,7 +38,7 @@ type Snapshot struct {
 	ConfigYAML    []byte
 	Auths         []map[string]any
 	PluginConfigs map[string]yaml.Node
-	PluginFields  map[string]map[string]pluginapi.ConfigFieldType
+	PluginFields  map[string]map[string]pluginapi.ConfigField
 }
 
 type Boundary struct {
@@ -127,9 +127,10 @@ func (b *Boundary) makeHandle(secret, domain string) string {
 }
 
 type candidate struct {
-	value     string
-	yamlTag   string
-	yamlField string
+	value       string
+	yamlTag     string
+	yamlField   string
+	resolveOnly bool
 }
 
 type candidates map[candidate]bool // true permits short pipe-delimited segments
@@ -150,7 +151,7 @@ type index struct {
 	byScalar     map[candidate]string
 	logSecrets   [256][]string
 	maxLogSecret int
-	pluginFields map[string]map[string]pluginapi.ConfigFieldType
+	pluginFields map[string]map[string]pluginapi.ConfigField
 }
 
 func (b *Boundary) build(values candidates) *index {
@@ -171,6 +172,9 @@ func (b *Boundary) build(values candidates) *index {
 		}
 		handle := b.handle(val)
 		idx.byHandle[handle] = val
+		if key.resolveOnly {
+			continue
+		}
 		idx.byValue[val] = handle
 		if len(val) >= 8 {
 			long = append(long, val)
@@ -204,7 +208,11 @@ func (b *Boundary) setSnapshot(source *Snapshot) error {
 		values.auth(auth)
 	}
 	if b.current == nil || !maps.Equal(b.current.values, values) ||
-		!maps.EqualFunc(b.current.pluginFields, source.PluginFields, maps.Equal[map[string]pluginapi.ConfigFieldType]) {
+		!maps.EqualFunc(b.current.pluginFields, source.PluginFields, func(a, b map[string]pluginapi.ConfigField) bool {
+			return maps.EqualFunc(a, b, func(a, b pluginapi.ConfigField) bool {
+				return a.Type == b.Type && a.Secret == b.Secret
+			})
+		}) {
 		b.current = b.build(values)
 		b.current.pluginFields = source.PluginFields
 	}
