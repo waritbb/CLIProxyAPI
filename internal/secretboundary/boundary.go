@@ -20,6 +20,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/MoeForge/moego/regexp"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 const handlePrefix = "cpx_h1_"
@@ -33,9 +34,11 @@ func ContainsHandle(data []byte) bool { return handlePattern.Match(data) }
 
 // Snapshot supplies the config and the auth manager's current credential metadata.
 type Snapshot struct {
-	Config     any
-	ConfigYAML []byte
-	Auths      []map[string]any
+	Config        any
+	ConfigYAML    []byte
+	Auths         []map[string]any
+	PluginConfigs map[string]yaml.Node
+	PluginFields  map[string]map[string]pluginapi.ConfigFieldType
 }
 
 type Boundary struct {
@@ -147,6 +150,7 @@ type index struct {
 	byScalar     map[candidate]string
 	logSecrets   [256][]string
 	maxLogSecret int
+	pluginFields map[string]map[string]pluginapi.ConfigFieldType
 }
 
 func (b *Boundary) build(values candidates) *index {
@@ -189,15 +193,20 @@ func (b *Boundary) setSnapshot(source *Snapshot) error {
 		b.current = nil
 		return err
 	}
-	if err := values.addConfigYAML(source.ConfigYAML); err != nil {
+	if err := values.addConfigYAML(source.ConfigYAML, source.PluginFields); err != nil {
 		b.current = nil
 		return err
+	}
+	for id, node := range source.PluginConfigs {
+		values.addPluginConfig(&node, source.PluginFields[id])
 	}
 	for _, auth := range source.Auths {
 		values.auth(auth)
 	}
-	if b.current == nil || !maps.Equal(b.current.values, values) {
+	if b.current == nil || !maps.Equal(b.current.values, values) ||
+		!maps.EqualFunc(b.current.pluginFields, source.PluginFields, maps.Equal[map[string]pluginapi.ConfigFieldType]) {
 		b.current = b.build(values)
+		b.current.pluginFields = source.PluginFields
 	}
 	return nil
 }
@@ -298,14 +307,7 @@ func (c candidates) config(v reflect.Value, tag, yamlField string) error {
 			if tag != "plugin-config" {
 				return errors.New("unclassified YAML config node")
 			}
-			node := v.Interface().(yaml.Node)
-			visitPluginScalars(&node, func(child *yaml.Node) {
-				if child.ShortTag() == "!!str" {
-					c.add(child.Value, false)
-				} else {
-					c[candidate{value: child.Value, yamlTag: child.ShortTag()}] = false
-				}
-			})
+			// Plugin instances are scanned with their manifest fields in setSnapshot.
 			return nil
 		}
 		for i := range v.NumField() {

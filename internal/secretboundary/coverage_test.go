@@ -11,13 +11,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/MoeForge/moego/regexp"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/secretboundary"
 	"gopkg.in/yaml.v3"
 )
 
 func TestSecretTagCoverage(t *testing.T) {
-	names := regexp.MustCompile("(?i)(key|token|secret|password|credential|cookie)s?$")
 	files := token.NewFileSet()
 	err := filepath.WalkDir("../..", func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -42,7 +41,7 @@ func TestSecretTagCoverage(t *testing.T) {
 			tag := reflect.StructTag(raw)
 			for _, encoding := range []string{"yaml", "json"} {
 				name, _, _ := strings.Cut(tag.Get(encoding), ",")
-				if names.MatchString(name) {
+				if secretboundary.SensitiveName(name) {
 					switch tag.Get("secret") {
 					case "value", "sensitive-header-values", "url-userinfo", "public", "walk", "plugin-config":
 					default:
@@ -79,7 +78,6 @@ func secretFieldType(expr ast.Expr) bool {
 }
 
 func TestConfigSecretTagCoverage(t *testing.T) {
-	names := regexp.MustCompile("(?i)(key|token|secret|password|credential|cookie)s?$")
 	var walk func(reflect.Type, string)
 	seen := map[reflect.Type]bool{}
 	walk = func(typ reflect.Type, path string) {
@@ -117,7 +115,7 @@ func TestConfigSecretTagCoverage(t *testing.T) {
 					if fieldName == "" {
 						fieldName = field.Name
 					}
-					if names.MatchString(fieldName) && tag == "" {
+					if secretboundary.SensitiveName(fieldName) && tag == "" {
 						t.Errorf("%s needs a secret tag for %s name", name, encoding)
 						break
 					}

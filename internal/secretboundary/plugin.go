@@ -1,53 +1,80 @@
 package secretboundary
 
 import (
+	"github.com/MoeForge/moego/regexp"
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	"gopkg.in/yaml.v3"
 )
 
-const pluginScalarKey = "secretboundary.pluginScalar"
+const pluginViewKey = "secretboundary.pluginView"
+
+var sensitiveName = regexp.MustCompile("(?i)(key|token|secret|password|credential|cookie)s?$")
+
+// SensitiveName reports whether a configuration key has a credential suffix.
+func SensitiveName(name string) bool { return sensitiveName.MatchString(name) }
+
+type pluginView struct {
+	boundary *Boundary
+	fields   map[string]map[string]pluginapi.ConfigFieldType
+	values   candidates
+}
 
 func (b *Boundary) scalarHandle(key candidate) string {
-	// Use the YAML tag as part of the digest, without exposing the scalar in
-	// the display suffix (a boolean or short ID would be easy to infer).
+	// Include the YAML tag in the digest and omit the display suffix.
 	return b.makeHandle(key.value, "\x00plugin-yaml:"+key.yamlTag+"\x00")
 }
 
-// RedactPluginScalars protects non-string leaves before a config view is
-// decoded into JSON, where their original YAML tag and spelling are lost.
-func RedactPluginScalars(c *gin.Context, instance *yaml.Node) {
-	if fn, ok := c.Get(pluginScalarKey); ok {
-		fn.(func(*yaml.Node) bool)(instance)
+func RedactPluginConfig(c *gin.Context, id string, instance *yaml.Node) {
+	if view, ok := c.Get(pluginViewKey); ok {
+		view.(pluginView).redact(id, instance)
 	}
 }
 
 func RedactPluginConfigTree(c *gin.Context, root *yaml.Node) {
-	if fn, ok := c.Get(pluginScalarKey); ok {
-		visitPluginConfigs(root, fn.(func(*yaml.Node) bool))
+	if view, ok := c.Get(pluginViewKey); ok {
+		visitPluginConfigs(root, view.(pluginView).redact)
 	}
 }
 
-func (b *Boundary) redactPluginScalars(instance *yaml.Node) bool {
-	changed := false
-	visitPluginScalars(instance, func(node *yaml.Node) {
-		if node.ShortTag() != "!!str" {
-			node.Value = b.scalarHandle(candidate{value: node.Value, yamlTag: node.ShortTag()})
-			node.Tag = "!!str"
-			changed = true
-		}
+func (c candidates) addPluginConfig(node *yaml.Node, fields map[string]pluginapi.ConfigFieldType) {
+	walkPluginSecrets(node, fields, func(secret *yaml.Node) string {
+		c.addPluginSecret(secret)
+		return ""
 	})
-	return changed
 }
 
-func visitPluginConfigs(root *yaml.Node, visit func(*yaml.Node) bool) bool {
+func (c candidates) addPluginSecret(node *yaml.Node) {
+	c.add(node.Value, false)
+	if tag := node.ShortTag(); tag != "!!str" {
+		c[candidate{value: node.Value, yamlTag: tag}] = false
+	}
+}
+
+func (v pluginView) redact(id string, instance *yaml.Node) bool {
+	out := walkPluginSecrets(instance, v.fields[id], func(node *yaml.Node) string {
+		v.values.addPluginSecret(node)
+		if tag := node.ShortTag(); tag != "!!str" {
+			return v.boundary.scalarHandle(candidate{value: node.Value, yamlTag: tag})
+		}
+		return v.boundary.handle(node.Value)
+	})
+	if out == instance {
+		return false
+	}
+	*instance = *out
+	return true
+}
+
+func visitPluginConfigs(root *yaml.Node, visit func(string, *yaml.Node) bool) bool {
 	if root.Kind == yaml.DocumentNode && len(root.Content) == 1 {
 		root = root.Content[0]
 	}
 	configs := mappingValue(mappingValue(root, "plugins"), "configs")
 	changed := false
 	if configs != nil && configs.Kind == yaml.MappingNode {
-		for i := 1; i < len(configs.Content); i += 2 {
-			changed = visit(configs.Content[i]) || changed
+		for i := 0; i+1 < len(configs.Content); i += 2 {
+			changed = visit(configs.Content[i].Value, configs.Content[i+1]) || changed
 		}
 	}
 	return changed
@@ -64,38 +91,74 @@ func mappingValue(node *yaml.Node, name string) *yaml.Node {
 	return nil
 }
 
-func visitPluginScalars(instance *yaml.Node, visit func(*yaml.Node)) {
-	seen := map[*yaml.Node]bool{}
-	var walk func(*yaml.Node)
-	walk = func(node *yaml.Node) {
-		if node == nil || seen[node] {
-			return
-		}
-		seen[node] = true
+// A credential suffix on the key or an ancestor makes a leaf secret. The
+// manifest has no secret flag and types only top-level fields, so an untyped
+// nonempty string also defaults to secret. Non-string leaves stay public
+// unless their name or an ancestor has a credential suffix.
+func pluginLeafSecret(node *yaml.Node, fieldType pluginapi.ConfigFieldType, sensitive bool) bool {
+	return node.ShortTag() != "!!null" && node.Value != "" &&
+		(sensitive || fieldType == "" && node.ShortTag() == "!!str")
+}
+
+// The visitor returns an empty string when it only needs to collect values.
+// Copy modified nodes so traversing aliases never writes into their targets.
+func walkPluginSecrets(instance *yaml.Node, fields map[string]pluginapi.ConfigFieldType, visit func(*yaml.Node) string) *yaml.Node {
+	aliases := make(map[*yaml.Node]bool)
+	var walk func(*yaml.Node, bool, pluginapi.ConfigFieldType, bool) *yaml.Node
+	walk = func(node *yaml.Node, root bool, fieldType pluginapi.ConfigFieldType, sensitive bool) *yaml.Node {
 		switch node.Kind {
 		case yaml.AliasNode:
-			walk(node.Alias)
+			if node.Alias == nil || aliases[node.Alias] {
+				return node
+			}
+			aliases[node.Alias] = true
+			out := walk(node.Alias, root, fieldType, sensitive)
+			delete(aliases, node.Alias)
+			if out == node.Alias {
+				return node
+			}
+			out.Anchor = ""
+			return out
 		case yaml.ScalarNode:
-			visit(node)
-		case yaml.MappingNode:
-			for i := 1; i < len(node.Content); i += 2 {
-				walk(node.Content[i])
+			if pluginLeafSecret(node, fieldType, sensitive) {
+				if handle := visit(node); handle != "" {
+					out := *node
+					out.Tag, out.Value = "!!str", handle
+					return &out
+				}
 			}
-		default:
-			for _, child := range node.Content {
-				walk(child)
+			return node
+		}
+		out := node
+		replace := func(i int, child *yaml.Node) {
+			if child == node.Content[i] {
+				return
+			}
+			if out == node {
+				copyNode := *node
+				copyNode.Content = append([]*yaml.Node(nil), node.Content...)
+				out = &copyNode
+			}
+			out.Content[i] = child
+		}
+		if node.Kind == yaml.MappingNode {
+			for i := 0; i+1 < len(node.Content); i += 2 {
+				key := node.Content[i]
+				if root && (key.Value == "enabled" || key.Value == "priority") {
+					continue
+				}
+				var childType pluginapi.ConfigFieldType
+				if root {
+					childType = fields[key.Value]
+				}
+				replace(i+1, walk(node.Content[i+1], root && key.ShortTag() == "!!merge", childType, sensitive || SensitiveName(key.Value)))
+			}
+		} else {
+			for i, child := range node.Content {
+				replace(i, walk(child, root, "", sensitive))
 			}
 		}
+		return out
 	}
-	if instance.Kind != yaml.MappingNode {
-		walk(instance)
-		return
-	}
-	for i := 0; i+1 < len(instance.Content); i += 2 {
-		switch instance.Content[i].Value {
-		case "enabled", "priority":
-		default:
-			walk(instance.Content[i+1])
-		}
-	}
+	return walk(instance, true, "", false)
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/secretboundary"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
@@ -43,6 +44,7 @@ type secretSourceVersion struct {
 	config         *config.Config
 	manager        *coreauth.Manager
 	authGeneration uint64
+	plugins        *pluginhost.Snapshot
 }
 
 func (h *Handler) secretSnapshot() *secretboundary.Snapshot {
@@ -51,6 +53,9 @@ func (h *Handler) secretSnapshot() *secretboundary.Snapshot {
 	version := secretSourceVersion{config: h.cfg, manager: h.authManager}
 	if h.authManager != nil {
 		version.authGeneration = h.authManager.AuthGeneration()
+	}
+	if h.pluginHost != nil {
+		version.plugins = h.pluginHost.Snapshot()
 	}
 	cacheable := true
 	if h.configFilePath != "" {
@@ -90,7 +95,17 @@ func (h *Handler) secretSnapshot() *secretboundary.Snapshot {
 			}
 		}
 	}
-	source := &secretboundary.Snapshot{Config: []any{h.cfg.CloneForRuntime(), &disk, liveKeys}, ConfigYAML: raw, Auths: auths}
+	runtime := h.cfg.CloneForRuntime()
+	source := &secretboundary.Snapshot{Config: []any{runtime, &disk, liveKeys}, ConfigYAML: raw, Auths: auths}
+	if version.plugins != nil {
+		source.PluginFields = version.plugins.ConfigFieldTypes()
+	}
+	if runtime != nil {
+		source.PluginConfigs = make(map[string]yaml.Node, len(runtime.Plugins.Configs))
+		for id, instance := range runtime.Plugins.Configs {
+			source.PluginConfigs[id] = instance.Raw
+		}
+	}
 	if cacheable {
 		h.secretSource, h.secretSourceVersion = source, version
 	}

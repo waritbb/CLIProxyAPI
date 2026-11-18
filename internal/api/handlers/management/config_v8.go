@@ -83,6 +83,7 @@ func (h *Handler) ConfigV8(c *gin.Context) {
 		}
 		secretboundary.RedactPluginConfigTree(c, root)
 		secretboundary.StringifyConfigSecrets(c, root)
+		value = configV8Node(root, parts)
 		var result any
 		if err = value.Decode(&result); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "decode_failed"})

@@ -69,6 +69,22 @@ func (h *Host) activeRecordsFromSnapshot(snap *Snapshot) []capabilityRecord {
 	return out
 }
 
+// ConfigFieldTypes returns the declared top-level field types by plugin ID.
+func (s *Snapshot) ConfigFieldTypes() map[string]map[string]pluginapi.ConfigFieldType {
+	types := make(map[string]map[string]pluginapi.ConfigFieldType)
+	for _, record := range s.records {
+		if len(record.meta.ConfigFields) == 0 {
+			continue
+		}
+		fields := make(map[string]pluginapi.ConfigFieldType, len(record.meta.ConfigFields))
+		for _, field := range record.meta.ConfigFields {
+			fields[field.Name] = field.Type
+		}
+		types[record.id] = fields
+	}
+	return types
+}
+
 // RegisteredPlugins returns a stable copy of plugin metadata in the current runtime snapshot.
 func (h *Host) RegisteredPlugins() []RegisteredPluginInfo {
 	records := h.activeRecords()

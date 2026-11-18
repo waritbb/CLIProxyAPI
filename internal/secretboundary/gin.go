@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
-	"gopkg.in/yaml.v3"
 	"io"
 	"maps"
 	"mime"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/MoeForge/moego/json"
 	"github.com/gin-gonic/gin"
+	"gopkg.in/yaml.v3"
 )
 
 const maxBody = 32 << 20
@@ -34,7 +34,9 @@ func IncludeAuthFile(c *gin.Context, data []byte) { c.Set(authFileKey, data) }
 // IncludeConfig adds the exact config version read by the handler.
 func IncludeConfig(c *gin.Context, cfg any, raw []byte) {
 	values := make(candidates)
-	if cfg == nil || values.addConfig(cfg) != nil || values.addConfigYAML(raw) != nil {
+	plugin, _ := c.Get(pluginViewKey)
+	view, _ := plugin.(pluginView)
+	if cfg == nil || values.addConfig(cfg) != nil || values.addConfigYAML(raw, view.fields) != nil {
 		values = nil
 	}
 	c.Set(configSourceKey, values)
@@ -73,7 +75,8 @@ func (b *Boundary) wrap(next gin.HandlerFunc, resolve bool) gin.HandlerFunc {
 		buffer := &capture{ResponseWriter: outer, header: outer.Header().Clone(), status: outer.Status()}
 		c.Writer = buffer
 		c.Set(protectedKey, true)
-		c.Set(pluginScalarKey, b.redactPluginScalars)
+		plugin := pluginView{boundary: b, fields: before.pluginFields, values: make(candidates)}
+		c.Set(pluginViewKey, plugin)
 		func() {
 			defer func() { c.Writer = outer }()
 			next(c)
@@ -91,7 +94,7 @@ func (b *Boundary) wrap(next gin.HandlerFunc, resolve bool) gin.HandlerFunc {
 		idx := after
 		authFile, hasAuthFile := c.Get(authFileKey)
 		cfg, hasConfig := c.Get(configSourceKey)
-		if before != after || hasAuthFile || hasConfig {
+		if before != after || hasAuthFile || hasConfig || len(plugin.values) > 0 {
 			values := maps.Clone(after.values)
 			if values == nil {
 				values = make(candidates)
@@ -119,6 +122,9 @@ func (b *Boundary) wrap(next gin.HandlerFunc, resolve bool) gin.HandlerFunc {
 					values[key] = values[key] || segment
 				}
 			}
+			for key, segment := range plugin.values {
+				values[key] = values[key] || segment
+			}
 			if !maps.Equal(values, after.values) {
 				idx = b.build(values)
 			}
@@ -132,7 +138,7 @@ func (b *Boundary) wrap(next gin.HandlerFunc, resolve bool) gin.HandlerFunc {
 		var prepare func(*yaml.Node) bool
 		if strings.HasSuffix(c.FullPath(), "/config.yaml") {
 			prepare = func(root *yaml.Node) bool {
-				changed := visitPluginConfigs(root, b.redactPluginScalars)
+				changed := visitPluginConfigs(root, plugin.redact)
 				return visitConfigScalars(root, "", idx.redactConfigScalar) || changed
 			}
 		}

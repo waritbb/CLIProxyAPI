@@ -2,6 +2,7 @@ package secretboundary
 
 import (
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	"gopkg.in/yaml.v3"
 )
 
@@ -12,11 +13,15 @@ func (c candidates) addConfigField(name, value string) {
 }
 
 // addConfigYAML records the original YAML scalar forms of indexed credentials.
-func (c candidates) addConfigYAML(raw []byte) error {
+func (c candidates) addConfigYAML(raw []byte, fields map[string]map[string]pluginapi.ConfigFieldType) error {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
 		return err
 	}
+	visitPluginConfigs(&doc, func(id string, node *yaml.Node) bool {
+		c.addPluginConfig(node, fields[id])
+		return false
+	})
 	visitConfigScalars(&doc, "", func(node *yaml.Node, field string) bool {
 		var value string
 		if err := node.Decode(&value); err == nil && value != "" {

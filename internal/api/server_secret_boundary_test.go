@@ -18,10 +18,12 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/secretboundary"
 	sdkauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -323,33 +325,159 @@ func TestManagementSecretPersistenceRejectsHandles(t *testing.T) {
 }
 
 func TestManagementSecretPluginConfig(t *testing.T) {
-	s, _, configPath, _ := secretFixture(t)
-	const key = "fixture-plugin-sensitive-key"
+	host := pluginhost.New()
+	s, _, configPath, _ := secretFixture(t, WithPluginHost(host))
+	const key = "fixture-plugin-tavily-private"
+	const nestedKey = "fixture-plugin-nested-private"
+	const untyped = "fixture-plugin-untyped-private"
 	f, err := os.OpenFile(configPath, os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.WriteString("plugins:\n  configs:\n    test-plugin:\n      enabled: true\n      priority: 42\n      nested: {tavily_api_keys: [" + key + "], pin: 76543210}\n")
+	_, err = fmt.Fprintf(f, `routing: {strategy: round-robin}
+plugins:
+  configs:
+    router:
+      enabled: true
+      priority: 42
+      mode: round-robin
+      default_provider: claude
+      model: grok-4
+      feature_enabled: true
+      threshold: 2.5
+      untyped: %s
+      tavily_api_keys: [%s]
+      nested: {CREDENTIALS: [[%s]], pin: 76543210}
+`, untyped, key, nestedKey)
+	if closeErr := f.Close(); err != nil || closeErr != nil {
+		t.Fatal("could not write fixture config")
+	}
+	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
-	}
-	for _, route := range []string{"/v0/management/config.yaml", "/v8/management/config.yaml", "/v8/management/config", "/v8/management/config/plugins/configs/test-plugin/nested"} {
+	s.mgmt.SetConfig(cfg)
+	// Registration can complete after the management boundary has read config.
+	secretRequest(s, "GET", "/v8/management/config", "", nil)
+	host.RegisterPluginForTest("router", pluginapi.Plugin{Metadata: pluginapi.Metadata{ConfigFields: []pluginapi.ConfigField{
+		{Name: "mode", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"round-robin"}},
+		{Name: "default_provider", Type: pluginapi.ConfigFieldTypeString},
+		{Name: "model", Type: pluginapi.ConfigFieldTypeString},
+		{Name: "feature_enabled", Type: pluginapi.ConfigFieldTypeBoolean},
+		{Name: "threshold", Type: pluginapi.ConfigFieldTypeNumber},
+		{Name: "tavily_api_keys", Type: pluginapi.ConfigFieldTypeArray},
+		{Name: "nested", Type: pluginapi.ConfigFieldTypeObject},
+	}}})
+	models := registry.GetGlobalRegistry()
+	models.RegisterClient("fixture.json", "claude", []*registry.ModelInfo{{ID: "grok-4"}})
+	t.Cleanup(func() { models.UnregisterClient("fixture.json") })
+
+	read := func(t *testing.T, route string, dst any) []byte {
+		t.Helper()
 		got := secretRequest(s, "GET", route, "", nil)
-		body := got.Body.Bytes()
-		if got.Code != 200 || bytes.Contains(body, []byte(key)) || bytes.Contains(body, []byte("76543210")) || !secretboundary.ContainsHandle(body) {
-			t.Errorf("%s: config status %d or unprotected plugin settings", route, got.Code)
+		if got.Code != 200 {
+			t.Fatalf("%s: HTTP %d", route, got.Code)
 		}
-		if strings.HasSuffix(route, ".yaml") {
-			for _, public := range []string{"enabled: true", "priority: 42"} {
-				if !bytes.Contains(body, []byte(public)) {
-					t.Errorf("%s: missing public plugin setting", route)
-				}
+		body := got.Body.Bytes()
+		for name, value := range map[string]string{"tavily_api_keys": key, "nested credentials": nestedKey, "untyped": untyped} {
+			if bytes.Contains(body, []byte(value)) {
+				t.Errorf("%s: exposed %s", route, name)
 			}
 		}
+		if dst != nil {
+			decode := json.Unmarshal
+			if strings.HasSuffix(route, ".yaml") {
+				decode = yaml.Unmarshal
+			}
+			if err := decode(body, dst); err != nil {
+				t.Fatalf("%s: invalid response", route)
+			}
+		}
+		return body
 	}
+	assertPlugin := func(t *testing.T, plugin map[string]any) {
+		t.Helper()
+		for field, want := range map[string]any{
+			"enabled": true, "mode": "round-robin", "feature_enabled": true, "threshold": 2.5,
+			"default_provider": "claude", "model": "grok-4",
+		} {
+			if plugin[field] != want {
+				t.Errorf("plugin field %s did not retain its value and type", field)
+			}
+		}
+		nested, _ := plugin["nested"].(map[string]any)
+		for name, raw := range map[string]any{
+			"tavily_api_keys": plugin["tavily_api_keys"], "nested credentials": nested["CREDENTIALS"], "untyped": plugin["untyped"],
+		} {
+			encoded, _ := json.Marshal(raw)
+			if !secretboundary.ContainsHandle(encoded) {
+				t.Errorf("plugin field %s is missing its handle", name)
+			}
+		}
+		if pin := nested["pin"]; pin != 76543210 && pin != float64(76543210) {
+			t.Error("untyped numeric setting did not remain public")
+		}
+	}
+	for _, route := range []string{"/v0/management/config.yaml", "/v8/management/config.yaml", "/v8/management/config"} {
+		t.Run(route, func(t *testing.T) {
+			var config struct {
+				Routing struct{ Strategy string }
+				Plugins struct{ Configs map[string]map[string]any }
+			}
+			read(t, route, &config)
+			if config.Routing.Strategy != "round-robin" {
+				t.Error("routing strategy collided with plugin mode")
+			}
+			assertPlugin(t, config.Plugins.Configs["router"])
+		})
+	}
+	t.Run("v8 plugin JSON subpath", func(t *testing.T) {
+		var plugin map[string]any
+		read(t, "/v8/management/config/plugins/configs/router", &plugin)
+		assertPlugin(t, plugin)
+	})
+	t.Run("legacy routing", func(t *testing.T) {
+		var routing struct{ Strategy string }
+		read(t, "/v0/management/routing/strategy", &routing)
+		if routing.Strategy != "round-robin" {
+			t.Error("routing strategy collided with plugin mode")
+		}
+	})
+	t.Run("legacy plugin JSON", func(t *testing.T) {
+		var plugin map[string]any
+		read(t, "/v0/management/plugins/router/config", &plugin)
+		assertPlugin(t, plugin)
+	})
+	t.Run("auth identity and models", func(t *testing.T) {
+		var auth struct{ Type, Provider string }
+		var rows struct{ Models []struct{ ID string } }
+		var listing struct {
+			Files []struct{ Type, Provider string }
+		}
+		read(t, "/v8/management/credentials?name=fixture.json", &listing)
+		if len(listing.Files) == 1 {
+			auth = listing.Files[0]
+		}
+		if auth.Type != "claude" || auth.Provider != "claude" {
+			t.Error("auth type or provider collided with plugin default_provider")
+		}
+		read(t, "/v8/management/credentials/models?name=fixture.json", &rows)
+		if len(rows.Models) != 1 || rows.Models[0].ID != "grok-4" {
+			t.Error("auth model collided with plugin model")
+		}
+	})
+	t.Run("log download", func(t *testing.T) {
+		dir := t.TempDir()
+		s.mgmt.SetLogDirectory(dir)
+		const name = "error-plugin-probe.log"
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(strings.Join([]string{key, nestedKey, untyped, "round-robin claude grok-4"}, " ")), 0600); err != nil {
+			t.Fatal(err)
+		}
+		body := read(t, "/v8/management/observability/logs/errors/"+name, nil)
+		if !secretboundary.ContainsHandle(body) || !bytes.Contains(body, []byte("round-robin claude grok-4")) {
+			t.Error("log did not preserve public values alongside redacted credentials")
+		}
+	})
 	baseline, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatal(err)
