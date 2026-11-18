@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/goplan"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -267,6 +269,9 @@ func (h *Host) ApplyConfig(ctx context.Context, cfg *config.Config) {
 		return
 	}
 	files = h.withLoadedPluginFallbacks(files, rc.Items, desiredVersions)
+	files = slices.DeleteFunc(files, func(file pluginFile) bool {
+		return strings.EqualFold(file.ID, goplan.PluginID)
+	})
 	h.detachUnselectedPlugins(ctx, enabledPluginIDs(files, rc.Items))
 
 	records := make([]capabilityRecord, 0, len(files))

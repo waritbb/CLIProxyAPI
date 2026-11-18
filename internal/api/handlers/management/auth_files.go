@@ -18,6 +18,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/credentialweight"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/goplan"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
@@ -46,6 +47,7 @@ var (
 	errInvalidAuthFile         = errors.New("invalid auth file")
 	errAuthFileNotFound        = errors.New("auth file not found")
 	errPluginVirtualAuth       = errors.New("plugin virtual auth cannot be modified directly; edit or delete the source auth file")
+	errConfigManagedCredential = errors.New("credential is managed in configuration")
 	newCodexOAuthService       = func(cfg *config.Config) codexOAuthService { return codex.NewCodexAuth(cfg) }
 	newAntigravityOAuthService = func(cfg *config.Config) antigravityOAuthService { return antigravity.NewAntigravityAuth(cfg, nil) }
 )
@@ -132,10 +134,12 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 	if pagination.enabled {
 		matching := make([]*coreauth.Auth, 0, len(auths))
 		for _, auth := range auths {
-			if !matchesAuthFileLookup(auth, nameFilter, authIndexFilter) || !isAuthFileListable(auth) {
+			if !matchesAuthFileLookup(auth, nameFilter, authIndexFilter) {
 				continue
 			}
-			matching = append(matching, auth)
+			if isAuthFileListable(auth, quota.v8 && goplan.Covers(auth)) {
+				matching = append(matching, auth)
+			}
 		}
 		sort.Slice(matching, func(i, j int) bool {
 			return compareAuthFileListOrder(matching[i], matching[j]) < 0
@@ -264,11 +268,11 @@ func compareAuthFileListOrder(left, right *coreauth.Auth) int {
 	return strings.Compare(leftIndex, rightIndex)
 }
 
-func isAuthFileListable(auth *coreauth.Auth) bool {
+func isAuthFileListable(auth *coreauth.Auth, goPlan bool) bool {
 	if auth == nil {
 		return false
 	}
-	runtimeOnly := isRuntimeOnlyAuth(auth)
+	runtimeOnly := goPlan || isRuntimeOnlyAuth(auth)
 	if runtimeOnly && (auth.Disabled || auth.Status == coreauth.StatusDisabled) {
 		return false
 	}
@@ -656,7 +660,8 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quota authFileQu
 		return nil
 	}
 	auth.EnsureIndex()
-	runtimeOnly := isRuntimeOnlyAuth(auth)
+	goPlan := quota.v8 && goplan.Covers(auth)
+	runtimeOnly := goPlan || isRuntimeOnlyAuth(auth)
 	if runtimeOnly && (auth.Disabled || auth.Status == coreauth.StatusDisabled) {
 		return nil
 	}
@@ -691,7 +696,10 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quota authFileQu
 	if modelQuotas := modelQuotaObservationPayload(auth.Provider, auth.ModelStates); len(modelQuotas) > 0 {
 		entry["model_quotas"] = modelQuotas
 	}
-	if pluginID := quota.pluginIDs[strings.ToLower(strings.TrimSpace(auth.Provider))]; pluginID != "" {
+	if goPlan {
+		entry["supports_quota"] = true
+		entry["quota_plugin_id"] = goplan.PluginID
+	} else if pluginID := quota.pluginIDs[strings.ToLower(strings.TrimSpace(auth.Provider))]; pluginID != "" {
 		entry["supports_quota"] = true
 		entry["quota_provider"] = auth.Provider
 		if quota.v8 {
@@ -722,7 +730,9 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quota authFileQu
 	if projectID := authProjectID(auth); projectID != "" {
 		entry["project_id"] = projectID
 	}
-	if accountType, account := auth.AccountInfo(); accountType != "" || account != "" {
+	if goPlan {
+		entry["account_type"] = "api_key"
+	} else if accountType, account := auth.AccountInfo(); accountType != "" || account != "" {
 		if accountType != "" {
 			entry["account_type"] = accountType
 		}

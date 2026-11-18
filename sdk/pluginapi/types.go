@@ -1884,6 +1884,7 @@ func (s *QuotaSubscription) UnmarshalJSON(data []byte) error {
 // QuotaGroup describes a group of quota buckets in normalized quota.
 type QuotaGroup struct {
 	DisplayName string        `json:"displayName,omitempty"`
+	Description string        `json:"description,omitempty"`
 	Buckets     []QuotaBucket `json:"buckets,omitempty"`
 }
 
