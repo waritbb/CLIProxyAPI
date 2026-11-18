@@ -1,9 +1,12 @@
 package management
 
 import (
+	"bytes"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -60,10 +63,21 @@ func goQuotaFixture(t *testing.T) (*gin.Engine, *coreauth.Manager, []*coreauth.A
 		}
 		auths[i] = registered
 	}
-	h := NewHandlerWithoutConfigFilePath(cfg, manager)
+	configPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("{}\n"), 0600); err != nil {
+		t.Fatal("could not create fixture configuration")
+	}
+	if err := config.SaveConfigPreserveComments(configPath, cfg, true); err != nil {
+		t.Fatal("could not seed fixture configuration")
+	}
+	h := NewHandler(cfg, configPath, manager)
 	router := gin.New()
 	v8 := router.Group("/v8/management", func(c *gin.Context) { c.Set(ConfigV8ContextKey, true) })
 	v8.GET("/credentials", h.ListAuthFiles)
+	v8.POST("/credentials/refresh", h.RefreshAuthFiles)
+	v8.POST("/credentials/verify", h.VerifyAuthFileV8)
+	v8.PATCH("/credentials/status", h.PatchAuthFileStatus)
+	v8.PATCH("/credentials/fields", h.PatchAuthFileFields)
 	v8.DELETE("/credentials", h.DeleteAuthFileV8)
 	v8.POST("/plugins/:id/quota", h.FetchPluginQuota)
 	return router, manager, auths, dir
@@ -135,6 +149,96 @@ func TestGoQuotaCredentials(t *testing.T) {
 
 	manager.Remove(t.Context(), auths[0].ID)
 	assertListing(auths[1])
+}
+
+type goQuotaVerifyExecutor struct {
+	recordingRefreshVerifyExecutor
+	provider string
+}
+
+func (e *goQuotaVerifyExecutor) Identifier() string { return e.provider }
+
+func TestGoQuotaCredentialRefreshAndVerifyRows(t *testing.T) {
+	router, manager, auths, _ := goQuotaFixture(t)
+	auth := auths[0]
+	manager.RegisterExecutor(&goQuotaVerifyExecutor{provider: auth.Provider})
+	endpoint := "/v8/management/credentials"
+	query := "?name=" + url.QueryEscape(auth.ID) + "&auth_index=" + url.QueryEscape(auth.EnsureIndex())
+
+	for _, tc := range []struct{ action, field string }{
+		{action: "refresh", field: "auth"},
+		{action: "verify", field: "credential"},
+	} {
+		t.Run(tc.action, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, endpoint+"/"+tc.action+query, nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s status = %d, want 200", tc.action, rec.Code)
+			}
+			if strings.Contains(rec.Body.String(), goQuotaBearerA) {
+				t.Fatal("action response leaked a credential")
+			}
+			var response map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+				t.Fatal("could not decode action response")
+			}
+			if tc.action == "verify" && response["verified"] != true {
+				t.Fatal("verification did not succeed")
+			}
+			row, ok := response[tc.field].(map[string]any)
+			if !ok {
+				t.Fatalf("%s response did not include a credential row", tc.action)
+			}
+
+			listing := httptest.NewRecorder()
+			router.ServeHTTP(listing, httptest.NewRequest(http.MethodGet, endpoint+query, nil))
+			var payload struct {
+				Files []map[string]any `json:"files"`
+			}
+			if err := json.Unmarshal(listing.Body.Bytes(), &payload); listing.Code != http.StatusOK || err != nil || len(payload.Files) != 1 {
+				t.Fatal("listing did not return exactly one credential row")
+			}
+			listed := payload.Files[0]
+			delete(listed, "cooldowns")
+			if !slices.Equal(slices.Sorted(maps.Keys(row)), slices.Sorted(maps.Keys(listed))) {
+				t.Fatal("action and listing credential row fields differ")
+			}
+			for _, field := range []string{"id", "auth_index", "runtime_only", "account_type", "supports_quota", "quota_plugin_id"} {
+				if row[field] != listed[field] {
+					t.Fatalf("action and listing rows differ for %s", field)
+				}
+			}
+		})
+	}
+}
+
+func TestGoQuotaCredentialPatchesPreserveConfig(t *testing.T) {
+	for _, tc := range []struct{ route, fields string }{
+		{route: "status", fields: `"disabled":true`},
+		{route: "fields", fields: `"note":"changed"`},
+	} {
+		t.Run(tc.route, func(t *testing.T) {
+			router, _, auths, dir := goQuotaFixture(t)
+			path := filepath.Join(dir, "config.yaml")
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal("could not read fixture configuration")
+			}
+
+			rec := httptest.NewRecorder()
+			body := strings.NewReader(`{"name":"` + auths[0].ID + `",` + tc.fields + `}`)
+			router.ServeHTTP(rec, httptest.NewRequest(http.MethodPatch, "/v8/management/credentials/"+tc.route, body))
+			if rec.Code != http.StatusConflict {
+				t.Errorf("PATCH status = %d, want 409", rec.Code)
+			} else if rec.Body.String() != `{"error":"credential is managed in configuration"}` {
+				t.Error("PATCH did not return the fixed config-managed error")
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Error("PATCH changed the fixture configuration")
+			}
+		})
+	}
 }
 
 type goQuotaRoundTrip func(*http.Request) (*http.Response, error)

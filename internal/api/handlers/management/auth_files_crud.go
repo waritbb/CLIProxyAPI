@@ -539,7 +539,7 @@ func (h *Handler) deleteAuthFileByName(ctx context.Context, name string) (string
 	targetID := ""
 	if targetAuth := h.findAuthForDelete(name); targetAuth != nil {
 		if isV8AuthFileMutation(ctx) && goplan.Covers(targetAuth) {
-			return filepath.Base(name), http.StatusConflict, errors.New("credential is managed in configuration")
+			return filepath.Base(name), http.StatusConflict, errConfigManagedCredential
 		}
 		if !isPluginVirtualSourceDelete(name, targetAuth) {
 			return filepath.Base(name), http.StatusConflict, errPluginVirtualAuth

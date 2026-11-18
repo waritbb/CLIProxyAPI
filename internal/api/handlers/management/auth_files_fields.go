@@ -20,6 +20,7 @@ import (
 	xaiauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/xai"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/credentialweight"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/goplan"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/synthesizer"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -67,6 +68,10 @@ func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 	targetAuth, _ := h.lookupAuthFile(name, authIndex)
 	if targetAuth == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "auth file not found"})
+		return
+	}
+	if c.GetBool(ConfigV8ContextKey) && goplan.Covers(targetAuth) {
+		c.JSON(http.StatusConflict, gin.H{"error": errConfigManagedCredential.Error()})
 		return
 	}
 	if coreauth.IsPluginVirtualAuth(targetAuth) {
@@ -321,6 +326,11 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 				break
 			}
 		}
+	}
+
+	if c.GetBool(ConfigV8ContextKey) && goplan.Covers(targetAuth) {
+		c.JSON(http.StatusConflict, gin.H{"error": errConfigManagedCredential.Error()})
+		return
 	}
 
 	// Config-sourced credentials are managed through config endpoints, not as auth files.

@@ -47,6 +47,7 @@ var (
 	errInvalidAuthFile         = errors.New("invalid auth file")
 	errAuthFileNotFound        = errors.New("auth file not found")
 	errPluginVirtualAuth       = errors.New("plugin virtual auth cannot be modified directly; edit or delete the source auth file")
+	errConfigManagedCredential = errors.New("credential is managed in configuration")
 	newCodexOAuthService       = func(cfg *config.Config) codexOAuthService { return codex.NewCodexAuth(cfg) }
 	newAntigravityOAuthService = func(cfg *config.Config) antigravityOAuthService { return antigravity.NewAntigravityAuth(cfg, nil) }
 )
@@ -131,29 +132,22 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 	observedAt := time.Now().UTC()
 	cooldownsKnown := !h.authManager.HomeEnabled()
 	if pagination.enabled {
-		type candidate struct {
-			auth   *coreauth.Auth
-			goPlan bool
-		}
-		matching := make([]candidate, 0, len(auths))
+		matching := make([]*coreauth.Auth, 0, len(auths))
 		for _, auth := range auths {
 			if !matchesAuthFileLookup(auth, nameFilter, authIndexFilter) {
 				continue
 			}
-			goPlan := quota.v8 && goplan.Covers(auth)
-			if isAuthFileListable(auth, goPlan) {
-				matching = append(matching, candidate{auth: auth, goPlan: goPlan})
+			if isAuthFileListable(auth, quota.v8 && goplan.Covers(auth)) {
+				matching = append(matching, auth)
 			}
 		}
 		sort.Slice(matching, func(i, j int) bool {
-			return compareAuthFileListOrder(matching[i].auth, matching[j].auth) < 0
+			return compareAuthFileListOrder(matching[i], matching[j]) < 0
 		})
 		total := len(matching)
 		start, end := pagination.bounds(total)
 		files := make([]gin.H, 0, end-start)
-		for _, item := range matching[start:end] {
-			auth := item.auth
-			quota.goPlan = item.goPlan
+		for _, auth := range matching[start:end] {
 			if entry := h.buildAuthFileEntry(auth, quota); entry != nil {
 				entry["cooldowns"] = nil
 				if cooldownsKnown {
@@ -170,7 +164,6 @@ func (h *Handler) ListAuthFiles(c *gin.Context) {
 		if !matchesAuthFileLookup(auth, nameFilter, authIndexFilter) {
 			continue
 		}
-		quota.goPlan = quota.v8 && goplan.Covers(auth)
 		if entry := h.buildAuthFileEntry(auth, quota); entry != nil {
 			entry["cooldowns"] = nil
 			if cooldownsKnown {
@@ -500,8 +493,7 @@ type authFileQuotaContext struct {
 	// A nil map means no quota plugins are available.
 	pluginIDs map[string]string
 	// v8 hides declarative quota_probe support because v8 only serves plugin quota routes.
-	v8     bool
-	goPlan bool
+	v8 bool
 }
 
 func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth, quota authFileQuotaContext) gin.H {
@@ -668,7 +660,8 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quota authFileQu
 		return nil
 	}
 	auth.EnsureIndex()
-	runtimeOnly := quota.goPlan || isRuntimeOnlyAuth(auth)
+	goPlan := quota.v8 && goplan.Covers(auth)
+	runtimeOnly := goPlan || isRuntimeOnlyAuth(auth)
 	if runtimeOnly && (auth.Disabled || auth.Status == coreauth.StatusDisabled) {
 		return nil
 	}
@@ -703,7 +696,7 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quota authFileQu
 	if modelQuotas := modelQuotaObservationPayload(auth.Provider, auth.ModelStates); len(modelQuotas) > 0 {
 		entry["model_quotas"] = modelQuotas
 	}
-	if quota.goPlan {
+	if goPlan {
 		entry["supports_quota"] = true
 		entry["quota_plugin_id"] = goplan.PluginID
 	} else if pluginID := quota.pluginIDs[strings.ToLower(strings.TrimSpace(auth.Provider))]; pluginID != "" {
@@ -737,7 +730,7 @@ func (h *Handler) buildAuthFileEntryLocked(auth *coreauth.Auth, quota authFileQu
 	if projectID := authProjectID(auth); projectID != "" {
 		entry["project_id"] = projectID
 	}
-	if quota.goPlan {
+	if goPlan {
 		entry["account_type"] = "api_key"
 	} else if accountType, account := auth.AccountInfo(); accountType != "" || account != "" {
 		if accountType != "" {
