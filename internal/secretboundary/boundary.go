@@ -409,8 +409,9 @@ func (c candidates) header(name, value string, shortSegments bool) {
 	}
 }
 
-// These top-level fields feed the panel's auth listing and metadata editor.
-// Nested objects do not inherit the allowlist (including OAuth token payloads).
+// These fields feed the panel's auth listing and metadata editor. A name stays
+// public at any depth, because auth writers copy public fields into nested
+// caches and the panel sends the listed value back through the relay.
 var publicAuthFields = map[string]bool{
 	"type": true, "provider": true, "email": true, "expired": true,
 	"prefix": true, "priority": true, "note": true, "disabled": true,
@@ -455,17 +456,23 @@ func (c candidates) auth(auth map[string]any) {
 				continue
 			}
 		}
-		if publicAuthFields[key] {
-			switch val.(type) {
-			case string, bool, float64, int, int64, nil:
-				continue
-			}
-			if key == "exclude_models" || key == "excluded_models" || key == "excluded-models" {
-				continue
-			}
+		if !publicAuthField(key, val) {
+			c.leaves(val)
 		}
-		c.leaves(val)
 	}
+}
+
+// Objects under a public name are still walked so each child is judged by its
+// own name.
+func publicAuthField(key string, val any) bool {
+	if !publicAuthFields[key] {
+		return false
+	}
+	switch val.(type) {
+	case string, bool, float64, int, int64, nil:
+		return true
+	}
+	return key == "exclude_models" || key == "excluded_models" || key == "excluded-models"
 }
 
 func (c candidates) leaves(value any) {
@@ -473,12 +480,16 @@ func (c candidates) leaves(value any) {
 	case string:
 		c.add(v, false)
 	case map[string]any:
-		for _, item := range v {
-			c.leaves(item)
+		for key, item := range v {
+			if !publicAuthField(key, item) {
+				c.leaves(item)
+			}
 		}
 	case map[string]string:
-		for _, item := range v {
-			c.leaves(item)
+		for key, item := range v {
+			if !publicAuthField(key, item) {
+				c.add(item, false)
+			}
 		}
 	case []any:
 		for _, item := range v {

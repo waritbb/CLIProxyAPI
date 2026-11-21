@@ -149,3 +149,30 @@ func TestBoundaryRejectsMultipartHandleBeforeDispatch(t *testing.T) {
 		t.Fatalf("multipart handle returned %d", w.Code)
 	}
 }
+
+func TestNestedPublicAuthFieldsStayPlainWithoutHidingSecrets(t *testing.T) {
+	b, err := Open(t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const project = "fixture-public-project"
+	const token = "fixture-nested-access-token"
+	const pluginSecret = "fixture-plugin-secret-value"
+	b.Rebuild(nil, []map[string]any{{
+		"project_id": project,
+		"hints":      map[string]any{"project_id": project, "models": []any{map[string]string{"user_id": "fixture-user", "key": pluginSecret}}},
+		"token":      map[string]any{"access_token": token, "account": map[string]any{"sub": token}},
+		"subject":    map[string]any{"api_key": "fixture-under-public-name"},
+	}})
+	idx := b.refresh()
+	for _, public := range []string{project, "fixture-user"} {
+		if idx.redact(public) != public {
+			t.Errorf("public field value %q was masked", public)
+		}
+	}
+	for _, secret := range []string{token, pluginSecret, "fixture-under-public-name"} {
+		if !ContainsHandle([]byte(idx.redact(secret))) {
+			t.Errorf("secret %q was not masked", secret)
+		}
+	}
+}
