@@ -606,9 +606,13 @@ func TestManagementSecretPanelAntigravityQuota(t *testing.T) {
 	s, manager, _, _ := secretFixture(t)
 	const project = "fixture-antigravity-project"
 	const token = "fixture-antigravity-access"
+	hints := sdkauth.BuildPersistedAntigravityCapabilityHints(project, "https://fixture.invalid", sdkauth.AntigravityModelCapabilityHints{
+		ModelIDs: map[string]struct{}{"fixture-model": {}},
+	})
 	_, err := manager.Register(t.Context(), &coreauth.Auth{
 		ID: "antigravity-fixture.json", Provider: "antigravity",
-		Metadata: map[string]any{"type": "antigravity", "email": "fixture@example.invalid", "project_id": project, "access_token": token, "expired": "2099-01-01T00:00:00Z"},
+		Metadata: map[string]any{"type": "antigravity", "email": "fixture@example.invalid", "project_id": project, "access_token": token, "expired": "2099-01-01T00:00:00Z",
+			sdkauth.AntigravityPersistedHintsMetaKey: hints},
 	})
 	if err != nil {
 		t.Fatal(err)
