@@ -409,9 +409,11 @@ func (c candidates) header(name, value string, shortSegments bool) {
 	}
 }
 
-// These fields feed the panel's auth listing and metadata editor. A name stays
-// public at any depth, because auth writers copy public fields into nested
-// caches and the panel sends the listed value back through the relay.
+// These top-level fields feed the panel's auth listing and metadata editor.
+// Nested objects do not inherit the allowlist (including OAuth token payloads
+// and free-text fields such as note), except for exact copies of a top-level
+// public string under the same name, such as the project_id that Antigravity
+// copies into its capability hints.
 var publicAuthFields = map[string]bool{
 	"type": true, "provider": true, "email": true, "expired": true,
 	"prefix": true, "priority": true, "note": true, "disabled": true,
@@ -431,6 +433,12 @@ var publicAuthFields = map[string]bool{
 }
 
 func (c candidates) auth(auth map[string]any) {
+	mirrors := map[string]string{}
+	for key, val := range auth {
+		if s, ok := val.(string); ok && s != "" && publicAuthFields[key] {
+			mirrors[key] = s
+		}
+	}
 	for key, val := range auth {
 		switch key {
 		case "proxy_url", "base_url", "base-url":
@@ -444,7 +452,7 @@ func (c candidates) auth(auth map[string]any) {
 					if s, ok := value.(string); ok {
 						c.header(name, s, false)
 					} else {
-						c.leaves(value)
+						c.leaves(value, nil)
 					}
 				}
 				continue
@@ -456,44 +464,38 @@ func (c candidates) auth(auth map[string]any) {
 				continue
 			}
 		}
-		if !publicAuthField(key, val) {
-			c.leaves(val)
+		if publicAuthFields[key] {
+			switch val.(type) {
+			case string, bool, float64, int, int64, nil:
+				continue
+			}
+			if key == "exclude_models" || key == "excluded_models" || key == "excluded-models" {
+				continue
+			}
 		}
+		c.leaves(val, mirrors)
 	}
 }
 
-// Objects under a public name are still walked so each child is judged by its
-// own name.
-func publicAuthField(key string, val any) bool {
-	if !publicAuthFields[key] {
-		return false
-	}
-	switch val.(type) {
-	case string, bool, float64, int, int64, nil:
-		return true
-	}
-	return key == "exclude_models" || key == "excluded_models" || key == "excluded-models"
-}
-
-func (c candidates) leaves(value any) {
+func (c candidates) leaves(value any, mirrors map[string]string) {
 	switch v := value.(type) {
 	case string:
 		c.add(v, false)
 	case map[string]any:
 		for key, item := range v {
-			if !publicAuthField(key, item) {
-				c.leaves(item)
+			if s, ok := item.(string); !ok || mirrors[key] != s {
+				c.leaves(item, mirrors)
 			}
 		}
 	case map[string]string:
 		for key, item := range v {
-			if !publicAuthField(key, item) {
+			if mirrors[key] != item {
 				c.add(item, false)
 			}
 		}
 	case []any:
 		for _, item := range v {
-			c.leaves(item)
+			c.leaves(item, mirrors)
 		}
 	case []string:
 		for _, item := range v {

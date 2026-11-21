@@ -150,29 +150,31 @@ func TestBoundaryRejectsMultipartHandleBeforeDispatch(t *testing.T) {
 	}
 }
 
-func TestNestedPublicAuthFieldsStayPlainWithoutHidingSecrets(t *testing.T) {
+func TestNestedCopiesOfPublicAuthFieldsStayPlain(t *testing.T) {
 	b, err := Open(t.TempDir(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	const project = "fixture-public-project"
+	const user = "fixture-public-user"
 	const token = "fixture-nested-access-token"
-	const pluginSecret = "fixture-plugin-secret-value"
 	b.Rebuild(nil, []map[string]any{{
 		"project_id": project,
-		"hints":      map[string]any{"project_id": project, "models": []any{map[string]string{"user_id": "fixture-user", "key": pluginSecret}}},
+		"user_id":    user,
+		"hints":      map[string]any{"project_id": project, "items": []any{map[string]string{"user_id": user}}},
 		"token":      map[string]any{"access_token": token, "account": map[string]any{"sub": token}},
+		"nested":     map[string]any{"note": "fixture-private-note", "project_id": "fixture-other-project"},
 		"subject":    map[string]any{"api_key": "fixture-under-public-name"},
 	}})
 	idx := b.refresh()
-	for _, public := range []string{project, "fixture-user"} {
+	for _, public := range []string{project, user} {
 		if idx.redact(public) != public {
 			t.Errorf("public field value %q was masked", public)
 		}
 	}
-	for _, secret := range []string{token, pluginSecret, "fixture-under-public-name"} {
+	for _, secret := range []string{token, "fixture-private-note", "fixture-other-project", "fixture-under-public-name"} {
 		if !ContainsHandle([]byte(idx.redact(secret))) {
-			t.Errorf("secret %q was not masked", secret)
+			t.Errorf("nested value %q was not masked", secret)
 		}
 	}
 }
